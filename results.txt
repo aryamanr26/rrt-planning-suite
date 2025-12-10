@@ -1,0 +1,27 @@
+4A* planner (4-connected) with drawings:
+Action Cost of the path:  12.203314137315513
+Length of the path:  75
+Planner run time:  445.34682273864746
+Executing trajectory
+Finished
+
+A* planner (8-connected) with drawing
+Action Cost of the path:  10.621690755722852
+Length of the path:  57
+Planner run time:  370.1268262863159
+Executing trajectory
+Finished
+
+
+RRT-Connect:
+pybullet build time: Jan 29 2025 23:16:28
+Running RRT-Connect...
+Connected!
+RRT-Connect finished in 0.72s
+RRT path found with 90 waypoints.
+Running smoothing (150 iterations)...
+Smoothing finished in 1.27s
+Smoothed path has 7 waypoints.
+Drawing paths...
+Executing trajectory
+Finished
