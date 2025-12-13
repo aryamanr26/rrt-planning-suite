@@ -781,12 +781,11 @@ def main(screenshot=False):
 
 
     # --- Main Execution ---
-    
-    print("Running RRT-Connect...")
+    PLANNER = 'RRT*'  # change this string to select another planner
+    print(f"Running {PLANNER}...")
     start_time = time.time()
     # ----------------- PLANNER SELECTION -----------------
     # Choose one of: 'RRT-Connect', 'RRT', 'RRT*', 'BiRRT*', 'InformedRRT*'
-    PLANNER = 'RRT-Connect'  # change this string to select another planner
     if PLANNER == 'RRT-Connect':
         rrt_path = rrt_connect(start_config, goal_config, joint_limits_list, collision_fn)
     elif PLANNER == 'RRT':
@@ -801,10 +800,10 @@ def main(screenshot=False):
         print(f"Unknown planner '{PLANNER}'. Falling back to RRT-Connect.")
         rrt_path = rrt_connect(start_config, goal_config, joint_limits_list, collision_fn)
     # ----------------------------------------------------
-    print(f"RRT-Connect finished in {time.time() - start_time:.2f}s")
+    print(f"{PLANNER} finished in {time.time() - start_time:.2f}s")
     
     if rrt_path:
-        print(f"RRT path found with {len(rrt_path)} waypoints.")
+        print(f"{PLANNER} path found with {len(rrt_path)} waypoints.")
         
         # --- Smoothing ---
         print(f"Running smoothing ({SMOOTH_ITERATIONS} iterations)...")

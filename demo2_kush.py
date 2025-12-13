@@ -2,6 +2,9 @@ import numpy as np
 from utils import load_env, get_collision_fn_PR2, execute_trajectory
 from pybullet_tools.utils import connect, disconnect, wait_if_gui, joint_from_name, get_joint_positions, set_joint_positions, get_joint_info, get_link_pose, link_from_name
 import random
+random.seed(420)
+import networkx as nx
+import matplotlib.pyplot as plt
 ### YOUR IMPORTS HERE ###
 import time
 from utils import draw_sphere_marker
@@ -33,7 +36,7 @@ def main(screenshot=False):
     ### YOUR CODE HERE ###
     
     # --- RRT Parameters ---
-    STEP_SIZE = 0.15 # 
+    STEP_SIZE = 0.05 # 0.05 PRM
     GOAL_BIAS = 0.3 # 
     MAX_ITERATIONS = 5000
     SMOOTH_ITERATIONS = 150 # 
@@ -486,6 +489,70 @@ def main(screenshot=False):
             path.append(cur)
             cur = parents[cur]
         return path[::-1]
+    
+    def visualize_prm(graph, start=None, goal=None, path=None):
+        G = nx.Graph()
+
+        # Build NetworkX graph
+        for u, neighbors in graph.items():
+            for v, w in neighbors:
+                G.add_edge(u, v, weight=w)
+
+        # Node positions (assumes 2D configs)
+        pos = {node: (node[0], node[1]) for node in G.nodes}
+
+        plt.figure(figsize=(8, 8))
+
+        # Draw roadmap nodes + edges
+        nx.draw(
+            G,
+            pos,
+            node_size=12,
+            node_color="lightgray",
+            edge_color="gray",
+            width=0.5,
+            with_labels=False
+        )
+
+        # Highlight solution path
+        if path is not None and len(path) > 1:
+            path_edges = list(zip(path[:-1], path[1:]))
+            nx.draw_networkx_edges(
+                G,
+                pos,
+                edgelist=path_edges,
+                edge_color="blue",
+                width=2.5
+            )
+
+        # Highlight start
+        if start is not None:
+            plt.scatter(
+                start[0], start[1],
+                c="green",
+                s=120,
+                marker="o",
+                edgecolors="black",
+                linewidths=1.5,
+                label="Start"
+            )
+
+        # Highlight goal
+        if goal is not None:
+            plt.scatter(
+                goal[0], goal[1],
+                c="red",
+                s=120,
+                marker="X",
+                edgecolors="black",
+                linewidths=1.5,
+                label="Goal"
+            )
+
+        plt.legend()
+        plt.axis("equal")
+        plt.title("PRM Roadmap with Start and Goal")
+        plt.show()
 
     # --- Additional planners: PRM, Lazy PRM, PRM*, FMT*, BIT*, A*-grid, STOMP-like optimizer ---
 
@@ -508,6 +575,8 @@ def main(screenshot=False):
                 if is_path_clear(s, n, collision_fn, STEP_SIZE):
                     w = get_distance(s, n)
                     graph[s].append((n, w))
+                    graph[n].append((s, w))
+
         return graph
 
     def dijkstra_graph(graph, start, goal):
@@ -539,18 +608,68 @@ def main(screenshot=False):
                     heapq.heappush(pq, (nd, v))
         return None
 
-    def prm(start, goal, limits, collision_fn, n_samples=400, k=10):
-        """Probabilistic Roadmap (PRM)."""
-        samples = [start, goal]
-        # sample random collision-free nodes
+    # def prm(start, goal, limits, collision_fn, n_samples=400, k=10):
+    #     """Probabilistic Roadmap (PRM)."""
+    #     samples = [start, goal]
+    #     # sample random collision-free nodes
+    #     tries = 0
+    #     while len(samples) < n_samples and tries < n_samples * 10:
+    #         q = sample_config(goal, limits, GOAL_BIAS)
+    #         if not collision_fn(q):
+    #             samples.append(q)
+    #         tries += 1
+    #     graph = build_prm(samples, k, limits, collision_fn)
+    #     path = dijkstra_graph(graph, start, goal)
+    #     if path is None:
+    #         print("PRM failed to find a path.")
+    #     return path
+
+    def prm(start, goal, limits, collision_fn, n_samples=600, k=15):
+        """Probabilistic Roadmap (PRM)"""
+
+        # 1. Reject invalid start / goal
+        if collision_fn(start) or collision_fn(goal):
+            print("Start or goal in collision.")
+            return None
+
+        # 2. Sample collision-free configurations (roadmap only)
+        samples = []
         tries = 0
         while len(samples) < n_samples and tries < n_samples * 10:
             q = sample_config(goal, limits, GOAL_BIAS)
             if not collision_fn(q):
                 samples.append(q)
             tries += 1
+
+        # 3. Build roadmap graph (offline)
+        print("Building PRM graph...")
         graph = build_prm(samples, k, limits, collision_fn)
+
+        # 4. Add start and goal to graph
+        print("[Query Phase] Connecting start and goal to PRM graph...")
+        graph[start] = []
+        graph[goal] = []
+
+        # 5. Connect start to roadmap
+        for q in knn_nodes(samples, start, 2*k):
+            if is_path_clear(start, q, collision_fn, STEP_SIZE):
+                w = get_distance(start, q)
+                graph[start].append((q, w))
+                graph[q].append((start, w))
+
+        # 6. Connect goal to roadmap
+        for q in knn_nodes(samples, goal, 2*k):
+            if is_path_clear(goal, q, collision_fn, STEP_SIZE):
+                w = get_distance(goal, q)
+                graph[goal].append((q, w))
+                graph[q].append((goal, w))
+
+        # 7. Graph search
+        
+        print("Searching for path in PRM graph...")
         path = dijkstra_graph(graph, start, goal)
+        visualize_prm(graph, start, goal, path)
+
         if path is None:
             print("PRM failed to find a path.")
         return path
@@ -829,8 +948,8 @@ def main(screenshot=False):
     start_time = time.time()
     # ----------------- PLANNER SELECTION -----------------
     # Choose one of: 'RRT-Connect', 'RRT', 'RRT*', 'BiRRT*', 'InformedRRT*', 'PRM', 'LazyPRM', 'PRM*', 'FMT*', 'BIT*', 'A*-Grid', 'STOMP'
-    # if PLANNER == 'RRT-Connect':
-    #     rrt_path = rrt_connect(start_config, goal_config, joint_limits_list, collision_fn)
+    if PLANNER == 'RRT-Connect':
+        rrt_path = rrt_connect(start_config, goal_config, joint_limits_list, collision_fn)
     # elif PLANNER == 'RRT':
     #     rrt_path = rrt_basic(start_config, goal_config, joint_limits_list, collision_fn)
     # elif PLANNER == 'RRT*':
