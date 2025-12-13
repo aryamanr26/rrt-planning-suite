@@ -33,10 +33,10 @@ def main(screenshot=False):
     ### YOUR CODE HERE ###
     
     # --- RRT Parameters ---
-    STEP_SIZE = 0.15 # 
-    GOAL_BIAS = 0.3 # 
+    STEP_SIZE = 0.15 #   0.15 for BiRRT*
+    GOAL_BIAS = 0.3 #   0.3 for BiRRT*
     MAX_ITERATIONS = 5000
-    SMOOTH_ITERATIONS = 150 # 
+    SMOOTH_ITERATIONS = 200 # 
 
     # Get joint limits as a list of (min, max) tuples
     joint_limits_list = [joint_limits[jn] for jn in joint_names]
@@ -226,63 +226,205 @@ def main(screenshot=False):
 
     # --- Additional planners implementations: RRT, RRT*, Bi-directional RRT*, Informed RRT* ---
 
+    # def rrt_basic(start, goal, limits, collision_fn):
+    #     """Simple single-tree RRT returning a path from start to goal if found."""
+    #     nodes = [start]
+    #     parents = {start: None}
+    #     for it in range(MAX_ITERATIONS):
+    #         q_rand = sample_config(goal, limits, GOAL_BIAS)
+    #         q_near = get_nearest_node(nodes, q_rand)
+    #         q_new = steer(q_near, q_rand, STEP_SIZE)
+    #         if collision_fn(q_new):
+    #             continue
+    #         # try to connect to q_near via collision-free interpolation
+    #         if not is_path_clear(q_near, q_new, collision_fn, STEP_SIZE):
+    #             continue
+    #         nodes.append(q_new)
+    #         parents[q_new] = q_near
+    #         # check if we can connect q_new to goal
+    #         if get_distance(q_new, goal) <= STEP_SIZE and is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
+    #             parents[goal] = q_new
+    #             # reconstruct
+    #             path = []
+    #             cur = goal
+    #             while cur is not None:
+    #                 path.append(cur)
+    #                 cur = parents[cur]
+    #             return path[::-1]
+    #     print("RRT basic failed to find a path.")
+    #     return None
+
     def rrt_basic(start, goal, limits, collision_fn):
-        """Simple single-tree RRT returning a path from start to goal if found."""
+        """Simple single-tree RRT with multi-step extension toward random samples."""
         nodes = [start]
         parents = {start: None}
+
+        def extend_towards(q_near, q_rand):
+            """Multi-step extension toward q_rand."""
+            path_ext = []
+            q_curr = q_near
+
+            while True:
+                q_next = steer(q_curr, q_rand, STEP_SIZE)
+
+                # Stop if next step collides
+                if collision_fn(q_next) or not is_path_clear(q_curr, q_next, collision_fn, STEP_SIZE):
+                    break
+
+                path_ext.append(q_next)
+                q_curr = q_next
+
+                # Stop if reached sample
+                if get_distance(q_curr, q_rand) < STEP_SIZE:
+                    break
+
+            return path_ext
+
         for it in range(MAX_ITERATIONS):
+
+            # --- sample ---
             q_rand = sample_config(goal, limits, GOAL_BIAS)
+
+            # --- nearest ---
             q_near = get_nearest_node(nodes, q_rand)
-            q_new = steer(q_near, q_rand, STEP_SIZE)
-            if collision_fn(q_new):
+
+            # --- extend multiple steps ---
+            extension = extend_towards(q_near, q_rand)
+            if not extension:
                 continue
-            # try to connect to q_near via collision-free interpolation
-            if not is_path_clear(q_near, q_new, collision_fn, STEP_SIZE):
-                continue
-            nodes.append(q_new)
-            parents[q_new] = q_near
-            # check if we can connect q_new to goal
-            if get_distance(q_new, goal) <= STEP_SIZE and is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
-                parents[goal] = q_new
-                # reconstruct
+
+            # add all extension nodes sequentially
+            for q_new in extension:
+                nodes.append(q_new)
+                parents[q_new] = q_near
+                q_near = q_new  # chain extension
+
+            # --- last node in extension ---
+            q_last = extension[-1]
+
+            # --- connect to goal if possible ---
+            if is_path_clear(q_last, goal, collision_fn, STEP_SIZE):
+
+                parents[goal] = q_last
+
+                # reconstruct path
                 path = []
                 cur = goal
                 while cur is not None:
                     path.append(cur)
                     cur = parents[cur]
                 return path[::-1]
+
         print("RRT basic failed to find a path.")
         return None
 
+    # def rrt_star(start, goal, limits, collision_fn):
+    #     """Simple RRT* (single-tree) with rewiring."""
+    #     nodes = [start]
+    #     parents = {start: None}
+    #     cost = {start: 0.0}
+    #     # neighbor radius (static, could be improved)
+    #     neighbor_radius = 0.4
+
+    #     for it in range(1, MAX_ITERATIONS+1):
+    #         q_rand = sample_config(goal, limits, GOAL_BIAS)
+    #         q_near = get_nearest_node(nodes, q_rand)
+    #         q_new = steer(q_near, q_rand, STEP_SIZE)
+    #         if collision_fn(q_new) or not is_path_clear(q_near, q_new, collision_fn, STEP_SIZE):
+    #             continue
+    #         # find neighbors within radius
+    #         neighbors = [n for n in nodes if get_distance(n, q_new) <= neighbor_radius]
+    #         # choose parent that gives min cost
+    #         best_parent = q_near
+    #         best_cost = cost[q_near] + get_distance(q_near, q_new)
+    #         for n in neighbors:
+    #             if is_path_clear(n, q_new, collision_fn, STEP_SIZE):
+    #                 c = cost[n] + get_distance(n, q_new)
+    #                 if c < best_cost:
+    #                     best_cost = c
+    #                     best_parent = n
+    #         nodes.append(q_new)
+    #         parents[q_new] = best_parent
+    #         cost[q_new] = best_cost
+    #         # rewire neighbors
+    #         for n in neighbors:
+    #             if n == best_parent:
+    #                 continue
+    #             if is_path_clear(q_new, n, collision_fn, STEP_SIZE):
+    #                 new_cost = cost[q_new] + get_distance(q_new, n)
+    #                 if new_cost < cost.get(n, float('inf')):
+    #                     parents[n] = q_new
+    #                     cost[n] = new_cost
+    #         # try connecting to goal if close enough
+    #         if get_distance(q_new, goal) <= STEP_SIZE and is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
+    #             parents[goal] = q_new
+    #             # reconstruct path
+    #             path = []
+    #             cur = goal
+    #             while cur is not None:
+    #                 path.append(cur)
+    #                 cur = parents[cur]
+    #             return path[::-1]
+    #     print("RRT* failed to find a path.")
+    #     return None
+
     def rrt_star(start, goal, limits, collision_fn):
-        """Simple RRT* (single-tree) with rewiring."""
+        """Corrected RRT* with multi-step extension + proper goal connection."""
         nodes = [start]
         parents = {start: None}
         cost = {start: 0.0}
-        # neighbor radius (static, could be improved)
-        neighbor_radius = 0.4
+        neighbor_radius = 0.2
 
-        for it in range(1, MAX_ITERATIONS+1):
+        def extend_towards(q_near, q_rand):
+            """Multi-step extension toward q_rand."""
+            path_ext = []
+            q_curr = q_near
+
+            while True:
+                q_next = steer(q_curr, q_rand, STEP_SIZE)
+                if collision_fn(q_next) or not is_path_clear(q_curr, q_next, collision_fn, STEP_SIZE):
+                    break
+                path_ext.append(q_next)
+                q_curr = q_next
+                # stop if reached sample
+                if get_distance(q_curr, q_rand) < STEP_SIZE:
+                    break
+            return path_ext
+
+        for it in range(1, MAX_ITERATIONS + 1):
+
+            # 1. Sample
             q_rand = sample_config(goal, limits, GOAL_BIAS)
+
+            # 2. Nearest node
             q_near = get_nearest_node(nodes, q_rand)
-            q_new = steer(q_near, q_rand, STEP_SIZE)
-            if collision_fn(q_new) or not is_path_clear(q_near, q_new, collision_fn, STEP_SIZE):
+
+            # 3. Extend multiple steps
+            extension = extend_towards(q_near, q_rand)
+            if not extension:
                 continue
-            # find neighbors within radius
+
+            # 4. Last reachable node in this extension
+            q_new = extension[-1]
+
+            # ----- RRT* parent selection -----
             neighbors = [n for n in nodes if get_distance(n, q_new) <= neighbor_radius]
-            # choose parent that gives min cost
+
             best_parent = q_near
             best_cost = cost[q_near] + get_distance(q_near, q_new)
+
             for n in neighbors:
                 if is_path_clear(n, q_new, collision_fn, STEP_SIZE):
                     c = cost[n] + get_distance(n, q_new)
                     if c < best_cost:
                         best_cost = c
                         best_parent = n
+
             nodes.append(q_new)
             parents[q_new] = best_parent
             cost[q_new] = best_cost
-            # rewire neighbors
+
+            # ----- Rewire neighbors -----
             for n in neighbors:
                 if n == best_parent:
                     continue
@@ -291,18 +433,23 @@ def main(screenshot=False):
                     if new_cost < cost.get(n, float('inf')):
                         parents[n] = q_new
                         cost[n] = new_cost
-            # try connecting to goal if close enough
-            if get_distance(q_new, goal) <= STEP_SIZE and is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
+
+            # ----- NEW: Proper goal connect -----
+            if is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
                 parents[goal] = q_new
-                # reconstruct path
+                cost[goal] = cost[q_new] + get_distance(q_new, goal)
+
+                # reconstruct full path
                 path = []
-                cur = goal
-                while cur is not None:
-                    path.append(cur)
-                    cur = parents[cur]
+                curr = goal
+                while curr is not None:
+                    path.append(curr)
+                    curr = parents[curr]
                 return path[::-1]
+
         print("RRT* failed to find a path.")
         return None
+
 
     def birrt_star(start, goal, limits, collision_fn):
         """Bidirectional RRT* - simplified: run two RRT* trees and try to connect."""
@@ -395,70 +542,206 @@ def main(screenshot=False):
         print("BiRRT* failed to find a path.")
         return None
 
+    # def informed_rrt_star(start, goal, limits, collision_fn):
+    #     """Informed RRT* implementation: once a solution is found, sample within the prolate hyperspheroid."""
+    #     nodes = [start]
+    #     parents = {start: None}
+    #     cost = {start: 0.0}
+    #     neighbor_radius = 0.4
+    #     best_solution_cost = float('inf')
+    #     solution_node = None
+
+    #     def sample_in_ellipsoid(start, goal, c_best):
+    #         # If no solution yet, sample uniformly
+    #         if c_best == float('inf'):
+    #             return sample_config(goal, limits, GOAL_BIAS)
+    #         # Prolate hyperspheroid sampling in configuration space: approximate by sampling a Gaussian in transformed space
+    #         s = np.array(start)
+    #         g = np.array(goal)
+    #         c_min = np.linalg.norm(g - s)
+    #         if c_min == 0:
+    #             return tuple(s)
+    #         # center
+    #         center = (s + g) / 2.0
+    #         # rotation is identity in this simplified implementation (we treat axes aligned)
+    #         a1 = (g - s) / c_min
+    #         # define radii along principal axes
+    #         r1 = c_best / 2.0
+    #         if c_best**2 - c_min**2 <= 0:
+    #             other_radius = 0.0
+    #         else:
+    #             other_radius = np.sqrt(c_best**2 - c_min**2) / 2.0
+    #         # sample in unit n-ball and scale
+    #         while True:
+    #             # sample in bounding hyper-ellipse box to reduce rejections
+    #             sample = np.array([random.uniform(-other_radius, other_radius) for _ in range(len(s))])
+    #             # set first component differently to align with major axis
+    #             sample[0] = random.uniform(-r1, r1)
+    #             q = center + sample
+    #             # clip to joint limits
+    #             q_clipped = []
+    #             for i, (mn, mx) in enumerate(limits):
+    #                 q_clipped.append(float(np.clip(q[i], mn, mx)))
+    #             q_tuple = tuple(q_clipped)
+    #             return q_tuple
+
+    #     for it in range(1, MAX_ITERATIONS+1):
+    #         if solution_node is None:
+    #             q_rand = sample_config(goal, limits, GOAL_BIAS)
+    #         else:
+    #             q_rand = sample_in_ellipsoid(start, goal, best_solution_cost)
+    #         q_near = get_nearest_node(nodes, q_rand)
+    #         q_new = steer(q_near, q_rand, STEP_SIZE)
+    #         if collision_fn(q_new) or not is_path_clear(q_near, q_new, collision_fn, STEP_SIZE):
+    #             continue
+    #         neighbors = [n for n in nodes if get_distance(n, q_new) <= neighbor_radius]
+    #         best_parent = q_near
+    #         best_cost = cost[q_near] + get_distance(q_near, q_new)
+    #         for n in neighbors:
+    #             if is_path_clear(n, q_new, collision_fn, STEP_SIZE):
+    #                 c = cost[n] + get_distance(n, q_new)
+    #                 if c < best_cost:
+    #                     best_cost = c
+    #                     best_parent = n
+    #         nodes.append(q_new)
+    #         parents[q_new] = best_parent
+    #         cost[q_new] = best_cost
+    #         for n in neighbors:
+    #             if n == best_parent:
+    #                 continue
+    #             if is_path_clear(q_new, n, collision_fn, STEP_SIZE):
+    #                 new_cost = cost[q_new] + get_distance(q_new, n)
+    #                 if new_cost < cost.get(n, float('inf')):
+    #                     parents[n] = q_new
+    #                     cost[n] = new_cost
+    #         # check connect to goal
+    #         if get_distance(q_new, goal) <= STEP_SIZE and is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
+    #             # potential solution — compute its cost
+    #             sol_cost = cost[q_new] + get_distance(q_new, goal)
+    #             if sol_cost < best_solution_cost:
+    #                 best_solution_cost = sol_cost
+    #                 parents[goal] = q_new
+    #                 solution_node = goal
+    #                 # (we don't immediately return — we allow informed sampling to improve solution until MAX_ITERATIONS)
+    #     if solution_node is None:
+    #         print("Informed RRT* failed to find a path.")
+    #         return None
+    #     # reconstruct final path
+    #     path = []
+    #     cur = goal
+    #     while cur is not None:
+    #         path.append(cur)
+    #         cur = parents[cur]
+    #     return path[::-1]
+
     def informed_rrt_star(start, goal, limits, collision_fn):
-        """Informed RRT* implementation: once a solution is found, sample within the prolate hyperspheroid."""
+        """Corrected Informed RRT* with multi-step extension + proper goal connection."""
         nodes = [start]
         parents = {start: None}
         cost = {start: 0.0}
+
         neighbor_radius = 0.4
         best_solution_cost = float('inf')
-        solution_node = None
+        solution_found = False
 
+        # --------------------------------------------------------
+        # Informed Sampling (Prolate Hyperspheroid approximation)
+        # --------------------------------------------------------
         def sample_in_ellipsoid(start, goal, c_best):
-            # If no solution yet, sample uniformly
             if c_best == float('inf'):
                 return sample_config(goal, limits, GOAL_BIAS)
-            # Prolate hyperspheroid sampling in configuration space: approximate by sampling a Gaussian in transformed space
+
             s = np.array(start)
             g = np.array(goal)
             c_min = np.linalg.norm(g - s)
+
             if c_min == 0:
                 return tuple(s)
-            # center
+
             center = (s + g) / 2.0
-            # rotation is identity in this simplified implementation (we treat axes aligned)
-            a1 = (g - s) / c_min
-            # define radii along principal axes
             r1 = c_best / 2.0
+
             if c_best**2 - c_min**2 <= 0:
-                other_radius = 0.0
+                r_other = 0.0
             else:
-                other_radius = np.sqrt(c_best**2 - c_min**2) / 2.0
-            # sample in unit n-ball and scale
+                r_other = np.sqrt(c_best**2 - c_min**2) / 2.0
+
+            # Draw until we get a valid sample
             while True:
-                # sample in bounding hyper-ellipse box to reduce rejections
-                sample = np.array([random.uniform(-other_radius, other_radius) for _ in range(len(s))])
-                # set first component differently to align with major axis
+                sample = np.array([random.uniform(-r_other, r_other) for _ in range(len(s))])
                 sample[0] = random.uniform(-r1, r1)
+
                 q = center + sample
-                # clip to joint limits
+
+                # Clip to joint limits
                 q_clipped = []
                 for i, (mn, mx) in enumerate(limits):
                     q_clipped.append(float(np.clip(q[i], mn, mx)))
-                q_tuple = tuple(q_clipped)
-                return q_tuple
 
-        for it in range(1, MAX_ITERATIONS+1):
-            if solution_node is None:
+                return tuple(q_clipped)
+
+        # --------------------------------------------------------
+        # Multi-step extension (same as RRT*)
+        # --------------------------------------------------------
+        def extend_towards(q_near, q_rand):
+            path_ext = []
+            q_curr = q_near
+
+            while True:
+                q_next = steer(q_curr, q_rand, STEP_SIZE)
+
+                if collision_fn(q_next) or not is_path_clear(q_curr, q_next, collision_fn, STEP_SIZE):
+                    break
+
+                path_ext.append(q_next)
+                q_curr = q_next
+
+                if get_distance(q_curr, q_rand) < STEP_SIZE:
+                    break
+
+            return path_ext
+
+        # --------------------------------------------------------
+        # Main Informed RRT* loop
+        # --------------------------------------------------------
+        for it in range(1, MAX_ITERATIONS + 1):
+
+            # If no solution yet → uniform sampling
+            # If solution exists → informed sampling
+            if not solution_found:
                 q_rand = sample_config(goal, limits, GOAL_BIAS)
             else:
                 q_rand = sample_in_ellipsoid(start, goal, best_solution_cost)
+
+            # Nearest neighbor
             q_near = get_nearest_node(nodes, q_rand)
-            q_new = steer(q_near, q_rand, STEP_SIZE)
-            if collision_fn(q_new) or not is_path_clear(q_near, q_new, collision_fn, STEP_SIZE):
+
+            # Multi-step extension
+            extension = extend_towards(q_near, q_rand)
+            if not extension:
                 continue
+
+            # Add last reachable node
+            q_new = extension[-1]
+
+            # ---------------- Parent selection (RRT*) ----------------
             neighbors = [n for n in nodes if get_distance(n, q_new) <= neighbor_radius]
+
             best_parent = q_near
             best_cost = cost[q_near] + get_distance(q_near, q_new)
+
             for n in neighbors:
                 if is_path_clear(n, q_new, collision_fn, STEP_SIZE):
                     c = cost[n] + get_distance(n, q_new)
                     if c < best_cost:
                         best_cost = c
                         best_parent = n
+
             nodes.append(q_new)
             parents[q_new] = best_parent
             cost[q_new] = best_cost
+
+            # ---------------- Rewire neighbors ----------------
             for n in neighbors:
                 if n == best_parent:
                     continue
@@ -467,19 +750,28 @@ def main(screenshot=False):
                     if new_cost < cost.get(n, float('inf')):
                         parents[n] = q_new
                         cost[n] = new_cost
-            # check connect to goal
-            if get_distance(q_new, goal) <= STEP_SIZE and is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
-                # potential solution — compute its cost
+
+            # ---------------- Try connecting to goal ----------------
+            if is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
+
                 sol_cost = cost[q_new] + get_distance(q_new, goal)
+
+                # first solution OR improved solution
                 if sol_cost < best_solution_cost:
                     best_solution_cost = sol_cost
+                    solution_found = True
                     parents[goal] = q_new
-                    solution_node = goal
-                    # (we don't immediately return — we allow informed sampling to improve solution until MAX_ITERATIONS)
-        if solution_node is None:
+                    cost[goal] = sol_cost
+
+                    # Continue searching for better paths (Informed RRT*)
+                    # but do NOT return yet.
+
+        # ---------------- After MAX_ITER — return best found ----------------
+        if not solution_found:
             print("Informed RRT* failed to find a path.")
             return None
-        # reconstruct final path
+
+        # reconstruct best available path
         path = []
         cur = goal
         while cur is not None:
@@ -487,13 +779,14 @@ def main(screenshot=False):
             cur = parents[cur]
         return path[::-1]
 
+
     # --- Main Execution ---
     
     print("Running RRT-Connect...")
     start_time = time.time()
     # ----------------- PLANNER SELECTION -----------------
     # Choose one of: 'RRT-Connect', 'RRT', 'RRT*', 'BiRRT*', 'InformedRRT*'
-    PLANNER = 'RRT'  # change this string to select another planner
+    PLANNER = 'InformedRRT*'  # change this string to select another planner
     if PLANNER == 'RRT-Connect':
         rrt_path = rrt_connect(start_config, goal_config, joint_limits_list, collision_fn)
     elif PLANNER == 'RRT':
