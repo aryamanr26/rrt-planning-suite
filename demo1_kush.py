@@ -786,7 +786,7 @@ def main(screenshot=False):
     start_time = time.time()
     # ----------------- PLANNER SELECTION -----------------
     # Choose one of: 'RRT-Connect', 'RRT', 'RRT*', 'BiRRT*', 'InformedRRT*'
-    PLANNER = 'InformedRRT*'  # change this string to select another planner
+    PLANNER = 'RRT-Connect'  # change this string to select another planner
     if PLANNER == 'RRT-Connect':
         rrt_path = rrt_connect(start_config, goal_config, joint_limits_list, collision_fn)
     elif PLANNER == 'RRT':
