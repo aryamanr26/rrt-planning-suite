@@ -33,8 +33,8 @@ def main(screenshot=False):
     ### YOUR CODE HERE ###
     
     # --- RRT Parameters ---
-    STEP_SIZE = 0.15 #   0.15 for BiRRT*
-    GOAL_BIAS = 0.3 #   0.3 for BiRRT*
+    STEP_SIZE = 0.05 #   0.15 for BiRRT*
+    GOAL_BIAS = 0.1 #   0.3 for BiRRT*
     MAX_ITERATIONS = 5000
     SMOOTH_ITERATIONS = 200 # 
 
@@ -450,39 +450,168 @@ def main(screenshot=False):
         print("RRT* failed to find a path.")
         return None
 
+    # def birrt_star(start, goal, limits, collision_fn):
+    #     """Bidirectional RRT* - simplified: run two RRT* trees and try to connect."""
+    #     # Each tree: nodes list, parents dict, cost dict
+    #     nodes_a = [start]
+    #     parents_a = {start: None}
+    #     cost_a = {start: 0.0}
+
+    #     nodes_b = [goal]
+    #     parents_b = {goal: None}
+    #     cost_b = {goal: 0.0}
+
+    #     neighbor_radius = 0.3
+
+    #     def try_extend(nodes_from, parents_from, cost_from, nodes_to, parents_to):
+    #         q_rand = sample_config(goal, limits, GOAL_BIAS) if nodes_from is nodes_a else sample_config(start, limits, GOAL_BIAS)
+    #         q_near = get_nearest_node(nodes_from, q_rand)
+    #         q_new = steer(q_near, q_rand, STEP_SIZE)
+    #         if collision_fn(q_new) or not is_path_clear(q_near, q_new, collision_fn, STEP_SIZE):
+    #             return None
+    #         # rewire logic like RRT*
+    #         neighbors = [n for n in nodes_from if get_distance(n, q_new) <= neighbor_radius]
+    #         best_parent = q_near
+    #         best_cost = cost_from[q_near] + get_distance(q_near, q_new)
+    #         for n in neighbors:
+    #             if is_path_clear(n, q_new, collision_fn, STEP_SIZE):
+    #                 c = cost_from[n] + get_distance(n, q_new)
+    #                 if c < best_cost:
+    #                     best_cost = c
+    #                     best_parent = n
+    #         nodes_from.append(q_new)
+    #         parents_from[q_new] = best_parent
+    #         cost_from[q_new] = best_cost
+    #         for n in neighbors:
+    #             if n == best_parent:
+    #                 continue
+    #             if is_path_clear(q_new, n, collision_fn, STEP_SIZE):
+    #                 new_cost = cost_from[q_new] + get_distance(q_new, n)
+    #                 if new_cost < cost_from.get(n, float('inf')):
+    #                     parents_from[n] = q_new
+    #                     cost_from[n] = new_cost
+    #         # Now try to connect to nearest node in other tree
+    #         q_near_other = get_nearest_node(nodes_to, q_new)
+    #         if get_distance(q_new, q_near_other) <= STEP_SIZE and is_path_clear(q_new, q_near_other, collision_fn, STEP_SIZE):
+    #             # found connection between q_new (in from) and q_near_other (in to)
+    #             # reconstruct path from start->q_new and q_near_other->goal
+    #             # Use parents_from and parents_to
+    #             if nodes_from is nodes_a:
+    #                 # connection node is q_new, corresponding other parent is q_near_other
+    #                 parents_b_copy = parents_b
+    #                 parents_a_copy = parents_a
+    #                 # link for reconstruction: set parents_b[q_new] = q_near_other
+    #                 parents_to[q_new] = q_near_other
+    #                 # build path: start->...->q_new, then q_near_other->...->goal
+    #                 path_a = []
+    #                 cur = q_new
+    #                 while cur is not None:
+    #                     path_a.append(cur)
+    #                     cur = parents_from[cur]
+    #                 path_b = []
+    #                 cur = q_near_other
+    #                 while cur is not None:
+    #                     path_b.append(cur)
+    #                     cur = parents_to[cur]
+    #                 return path_a[::-1] + path_b
+    #             else:
+    #                 # symmetric case
+    #                 parents_to[q_new] = q_near_other
+    #                 path_a = []
+    #                 cur = q_near_other
+    #                 while cur is not None:
+    #                     path_a.append(cur)
+    #                     cur = parents_from[cur]
+    #                 path_b = []
+    #                 cur = q_new
+    #                 while cur is not None:
+    #                     path_b.append(cur)
+    #                     cur = parents_to[cur]
+    #                 return path_a[::-1] + path_b
+    #         return None
+
+    #     for it in range(MAX_ITERATIONS):
+    #         # alternate extending both trees
+    #         res = try_extend(nodes_a, parents_a, cost_a, nodes_b, parents_b)
+    #         if res:
+    #             return res
+    #         res = try_extend(nodes_b, parents_b, cost_b, nodes_a, parents_a)
+    #         if res:
+    #             return res
+    #     print("BiRRT* failed to find a path.")
+    #     return None
 
     def birrt_star(start, goal, limits, collision_fn):
-        """Bidirectional RRT* - simplified: run two RRT* trees and try to connect."""
-        # Each tree: nodes list, parents dict, cost dict
+        """Bidirectional RRT* with multi-step extension + proper rewiring and tree connection."""
+
+        # Tree A = forward tree (from start)
         nodes_a = [start]
         parents_a = {start: None}
         cost_a = {start: 0.0}
 
+        # Tree B = backward tree (from goal)
         nodes_b = [goal]
         parents_b = {goal: None}
         cost_b = {goal: 0.0}
 
-        neighbor_radius = 0.3
+        neighbor_radius = 0.2
 
-        def try_extend(nodes_from, parents_from, cost_from, nodes_to, parents_to):
+        # -------------------------------------------------------
+        # Multi-step extension (same as RRT*)
+        # -------------------------------------------------------
+        def extend_towards(q_near, q_rand):
+            path_ext = []
+            q_curr = q_near
+
+            while True:
+                q_next = steer(q_curr, q_rand, STEP_SIZE)
+
+                if collision_fn(q_next) or not is_path_clear(q_curr, q_next, collision_fn, STEP_SIZE):
+                    break
+
+                path_ext.append(q_next)
+                q_curr = q_next
+
+                if get_distance(q_curr, q_rand) < STEP_SIZE:
+                    break
+
+            return path_ext
+
+        # -------------------------------------------------------
+        # Try to extend one tree toward random sample, then connect to the other tree
+        # -------------------------------------------------------
+        def try_extend(nodes_from, parents_from, cost_from, nodes_to, parents_to, cost_to):
+            # Use correct bias direction
             q_rand = sample_config(goal, limits, GOAL_BIAS) if nodes_from is nodes_a else sample_config(start, limits, GOAL_BIAS)
+
+            # nearest node in the active tree
             q_near = get_nearest_node(nodes_from, q_rand)
-            q_new = steer(q_near, q_rand, STEP_SIZE)
-            if collision_fn(q_new) or not is_path_clear(q_near, q_new, collision_fn, STEP_SIZE):
+
+            # multi-step extension
+            extension = extend_towards(q_near, q_rand)
+            if not extension:
                 return None
-            # rewire logic like RRT*
+
+            q_new = extension[-1]
+
+            # ---------------- Parent selection (RRT*) ----------------
             neighbors = [n for n in nodes_from if get_distance(n, q_new) <= neighbor_radius]
+
             best_parent = q_near
             best_cost = cost_from[q_near] + get_distance(q_near, q_new)
+
             for n in neighbors:
                 if is_path_clear(n, q_new, collision_fn, STEP_SIZE):
                     c = cost_from[n] + get_distance(n, q_new)
                     if c < best_cost:
                         best_cost = c
                         best_parent = n
+
             nodes_from.append(q_new)
             parents_from[q_new] = best_parent
             cost_from[q_new] = best_cost
+
+            # ---------------- Rewiring ----------------
             for n in neighbors:
                 if n == best_parent:
                     continue
@@ -491,54 +620,58 @@ def main(screenshot=False):
                     if new_cost < cost_from.get(n, float('inf')):
                         parents_from[n] = q_new
                         cost_from[n] = new_cost
-            # Now try to connect to nearest node in other tree
+
+            # -------------------------------------------------------
+            # Try to CONNECT to the opposite tree via multi-step extend
+            # -------------------------------------------------------
             q_near_other = get_nearest_node(nodes_to, q_new)
-            if get_distance(q_new, q_near_other) <= STEP_SIZE and is_path_clear(q_new, q_near_other, collision_fn, STEP_SIZE):
-                # found connection between q_new (in from) and q_near_other (in to)
-                # reconstruct path from start->q_new and q_near_other->goal
-                # Use parents_from and parents_to
-                if nodes_from is nodes_a:
-                    # connection node is q_new, corresponding other parent is q_near_other
-                    parents_b_copy = parents_b
-                    parents_a_copy = parents_a
-                    # link for reconstruction: set parents_b[q_new] = q_near_other
-                    parents_to[q_new] = q_near_other
-                    # build path: start->...->q_new, then q_near_other->...->goal
+            connect_extension = extend_towards(q_near_other, q_new)
+
+            # if multi-step extension from other tree reaches near q_new → connection formed
+            if connect_extension:
+                q_connect = connect_extension[-1]
+
+                if get_distance(q_connect, q_new) < STEP_SIZE and is_path_clear(q_connect, q_new, collision_fn, STEP_SIZE):
+
+                    # add this new connection node to other tree
+                    nodes_to.append(q_connect)
+                    parents_to[q_connect] = q_near_other
+                    cost_to[q_connect] = cost_to[q_near_other] + get_distance(q_near_other, q_connect)
+
+                    # ---------------------------------------------------
+                    # Reconstruct full path: start -> connection -> goal
+                    # ---------------------------------------------------
                     path_a = []
                     cur = q_new
                     while cur is not None:
                         path_a.append(cur)
                         cur = parents_from[cur]
+
                     path_b = []
-                    cur = q_near_other
+                    cur = q_connect
                     while cur is not None:
                         path_b.append(cur)
                         cur = parents_to[cur]
+
                     return path_a[::-1] + path_b
-                else:
-                    # symmetric case
-                    parents_to[q_new] = q_near_other
-                    path_a = []
-                    cur = q_near_other
-                    while cur is not None:
-                        path_a.append(cur)
-                        cur = parents_from[cur]
-                    path_b = []
-                    cur = q_new
-                    while cur is not None:
-                        path_b.append(cur)
-                        cur = parents_to[cur]
-                    return path_a[::-1] + path_b
+
             return None
 
+        # -------------------------------------------------------
+        # Bidirectional loop
+        # -------------------------------------------------------
         for it in range(MAX_ITERATIONS):
-            # alternate extending both trees
-            res = try_extend(nodes_a, parents_a, cost_a, nodes_b, parents_b)
+
+            # Extend from start tree toward random sample, try connecting to goal tree
+            res = try_extend(nodes_a, parents_a, cost_a, nodes_b, parents_b, cost_b)
             if res:
                 return res
-            res = try_extend(nodes_b, parents_b, cost_b, nodes_a, parents_a)
+
+            # Extend from goal tree toward random sample, try connecting to start tree
+            res = try_extend(nodes_b, parents_b, cost_b, nodes_a, parents_a, cost_a)
             if res:
                 return res
+
         print("BiRRT* failed to find a path.")
         return None
 
@@ -779,9 +912,8 @@ def main(screenshot=False):
             cur = parents[cur]
         return path[::-1]
 
-
     # --- Main Execution ---
-    PLANNER = 'RRT*'  # change this string to select another planner
+    PLANNER = 'InformedRRT*'  # change this string to select another planner
     print(f"Running {PLANNER}...")
     start_time = time.time()
     # ----------------- PLANNER SELECTION -----------------

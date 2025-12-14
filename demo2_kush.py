@@ -559,80 +559,66 @@ def main(screenshot=False):
     import heapq
     from math import inf
 
-    def knn_nodes(nodes, q, k):
-        """Return k nearest nodes (by get_distance) to q from list nodes."""
-        nodes_sorted = sorted(nodes, key=lambda n: get_distance(n, q))
-        return nodes_sorted[:k]
-
     def build_prm(samples, k, limits, collision_fn):
-        """Build a PRM graph given list of sample configs (assumed collision-free)."""
-        graph = {s: [] for s in samples}
+        """Build PRM graph using node indices instead of raw config tuples."""
+        n = len(samples)
+        graph = {i: [] for i in range(n)}  # adjacency list
+
         for i, s in enumerate(samples):
-            neighbors = knn_nodes(samples, s, k+1)  # includes itself possibly
-            for n in neighbors:
-                if n == s:
-                    continue
-                if is_path_clear(s, n, collision_fn, STEP_SIZE):
-                    w = get_distance(s, n)
-                    graph[s].append((n, w))
-                    graph[n].append((s, w))
+            # find k nearest neighbors by configuration distance
+            dists = [(j, get_distance(s, samples[j])) for j in range(n) if j != i]
+            dists.sort(key=lambda x: x[1])
+            neighbors = dists[:k]
+
+            for j, d in neighbors:
+                if is_path_clear(s, samples[j], collision_fn, STEP_SIZE):
+                    graph[i].append((j, d))
+                    graph[j].append((i, d))  # ensure bidirectional
 
         return graph
 
-    def dijkstra_graph(graph, start, goal):
-        """Dijkstra on adjacency dict: graph[node] = [(neighbor, weight), ...]"""
-        if start not in graph or goal not in graph:
-            return None
-        dist = {start: 0.0}
-        parent = {start: None}
-        pq = [(0.0, start)]
+
+    def dijkstra_graph(graph, start_id, goal_id):
+        """Run Dijkstra using node IDs."""
+        dist = {start_id: 0.0}
+        parent = {start_id: None}
+        pq = [(0.0, start_id)]
         visited = set()
+
         while pq:
             d, u = heapq.heappop(pq)
             if u in visited:
                 continue
             visited.add(u)
-            if u == goal:
+
+            if u == goal_id:
                 # reconstruct
-                path = []
-                cur = u
-                while cur is not None:
-                    path.append(cur)
-                    cur = parent[cur]
-                return path[::-1]
+                path_ids = []
+                curr = u
+                while curr is not None:
+                    path_ids.append(curr)
+                    curr = parent[curr]
+                return path_ids[::-1]
+
             for v, w in graph.get(u, []):
                 nd = d + w
-                if nd < dist.get(v, inf):
+                if nd < dist.get(v, float('inf')):
                     dist[v] = nd
                     parent[v] = u
                     heapq.heappush(pq, (nd, v))
+
         return None
 
-    # def prm(start, goal, limits, collision_fn, n_samples=400, k=10):
-    #     """Probabilistic Roadmap (PRM)."""
-    #     samples = [start, goal]
-    #     # sample random collision-free nodes
-    #     tries = 0
-    #     while len(samples) < n_samples and tries < n_samples * 10:
-    #         q = sample_config(goal, limits, GOAL_BIAS)
-    #         if not collision_fn(q):
-    #             samples.append(q)
-    #         tries += 1
-    #     graph = build_prm(samples, k, limits, collision_fn)
-    #     path = dijkstra_graph(graph, start, goal)
-    #     if path is None:
-    #         print("PRM failed to find a path.")
-    #     return path
 
-    def prm(start, goal, limits, collision_fn, n_samples=600, k=15):
-        """Probabilistic Roadmap (PRM)"""
+    def prm(start, goal, limits, collision_fn, n_samples=600, k=20):
+        """Correct PRM implementation returning a valid path."""
 
         # 1. Reject invalid start / goal
         if collision_fn(start) or collision_fn(goal):
             print("Start or goal in collision.")
             return None
 
-        # 2. Sample collision-free configurations (roadmap only)
+        # 2. Generate collision-free random samples
         samples = []
         tries = 0
         while len(samples) < n_samples and tries < n_samples * 10:
@@ -641,38 +627,167 @@ def main(screenshot=False):
                 samples.append(q)
             tries += 1
 
-        # 3. Build roadmap graph (offline)
+        # Add start and goal to sample list
+        start_id = len(samples)
+        samples.append(start)
+
+        goal_id = len(samples)
+        samples.append(goal)
+
+        # 3. Build PRM graph
         print("Building PRM graph...")
         graph = build_prm(samples, k, limits, collision_fn)
 
-        # 4. Add start and goal to graph
-        print("[Query Phase] Connecting start and goal to PRM graph...")
-        graph[start] = []
-        graph[goal] = []
+        # 4. Connect start to its nearest neighbors
+        print("Connecting start and goal...")
+        dists_start = [(i, get_distance(start, samples[i])) for i in range(len(samples) - 2)]
+        dists_start.sort(key=lambda x: x[1])
 
-        # 5. Connect start to roadmap
-        for q in knn_nodes(samples, start, 2*k):
-            if is_path_clear(start, q, collision_fn, STEP_SIZE):
-                w = get_distance(start, q)
-                graph[start].append((q, w))
-                graph[q].append((start, w))
+        for i, d in dists_start[:2*k]:
+            if is_path_clear(start, samples[i], collision_fn, STEP_SIZE):
+                graph[start_id].append((i, d))
+                graph[i].append((start_id, d))
 
-        # 6. Connect goal to roadmap
-        for q in knn_nodes(samples, goal, 2*k):
-            if is_path_clear(goal, q, collision_fn, STEP_SIZE):
-                w = get_distance(goal, q)
-                graph[goal].append((q, w))
-                graph[q].append((goal, w))
+        # 5. Connect goal to nearest neighbors
+        dists_goal = [(i, get_distance(goal, samples[i])) for i in range(len(samples) - 2)]
+        dists_goal.sort(key=lambda x: x[1])
 
-        # 7. Graph search
-        
-        print("Searching for path in PRM graph...")
-        path = dijkstra_graph(graph, start, goal)
+        for i, d in dists_goal[:2*k]:
+            if is_path_clear(goal, samples[i], collision_fn, STEP_SIZE):
+                graph[goal_id].append((i, d))
+                graph[i].append((goal_id, d))
+
+        # 6. Run Dijkstra
+        print("Searching for path...")
+        path_ids = dijkstra_graph(graph, start_id, goal_id)
+
+        if path_ids is None:
+            print("PRM failed to find a path.")
+            return None
+
+        # Convert node IDs back to actual configs
+        path = [samples[i] for i in path_ids]
+
+        # Optional: visualize roadmap
         visualize_prm(graph, start, goal, path)
 
-        if path is None:
-            print("PRM failed to find a path.")
         return path
+
+
+    # def knn_nodes(nodes, q, k):
+    #     """Return k nearest nodes (by get_distance) to q from list nodes."""
+    #     nodes_sorted = sorted(nodes, key=lambda n: get_distance(n, q))
+    #     return nodes_sorted[:k]
+
+    # def build_prm(samples, k, limits, collision_fn):
+    #     """Build a PRM graph given list of sample configs (assumed collision-free)."""
+    #     graph = {s: [] for s in samples}
+    #     for i, s in enumerate(samples):
+    #         neighbors = knn_nodes(samples, s, k+1)  # includes itself possibly
+    #         for n in neighbors:
+    #             if n == s:
+    #                 continue
+    #             if is_path_clear(s, n, collision_fn, STEP_SIZE):
+    #                 w = get_distance(s, n)
+    #                 graph[s].append((n, w))
+    #                 graph[n].append((s, w))
+
+    #     return graph
+
+    # def dijkstra_graph(graph, start, goal):
+    #     """Dijkstra on adjacency dict: graph[node] = [(neighbor, weight), ...]"""
+    #     if start not in graph or goal not in graph:
+    #         return None
+    #     dist = {start: 0.0}
+    #     parent = {start: None}
+    #     pq = [(0.0, start)]
+    #     visited = set()
+    #     while pq:
+    #         d, u = heapq.heappop(pq)
+    #         if u in visited:
+    #             continue
+    #         visited.add(u)
+    #         if u == goal:
+    #             # reconstruct
+    #             path = []
+    #             cur = u
+    #             while cur is not None:
+    #                 path.append(cur)
+    #                 cur = parent[cur]
+    #             return path[::-1]
+    #         for v, w in graph.get(u, []):
+    #             nd = d + w
+    #             if nd < dist.get(v, inf):
+    #                 dist[v] = nd
+    #                 parent[v] = u
+    #                 heapq.heappush(pq, (nd, v))
+    #     return None
+
+    # # def prm(start, goal, limits, collision_fn, n_samples=400, k=10):
+    # #     """Probabilistic Roadmap (PRM)."""
+    # #     samples = [start, goal]
+    # #     # sample random collision-free nodes
+    # #     tries = 0
+    # #     while len(samples) < n_samples and tries < n_samples * 10:
+    # #         q = sample_config(goal, limits, GOAL_BIAS)
+    # #         if not collision_fn(q):
+    # #             samples.append(q)
+    # #         tries += 1
+    # #     graph = build_prm(samples, k, limits, collision_fn)
+    # #     path = dijkstra_graph(graph, start, goal)
+    # #     if path is None:
+    # #         print("PRM failed to find a path.")
+    # #     return path
+
+    # def prm(start, goal, limits, collision_fn, n_samples=600, k=15):
+    #     """Probabilistic Roadmap (PRM)"""
+
+    #     # 1. Reject invalid start / goal
+    #     if collision_fn(start) or collision_fn(goal):
+    #         print("Start or goal in collision.")
+    #         return None
+
+    #     # 2. Sample collision-free configurations (roadmap only)
+    #     samples = []
+    #     tries = 0
+    #     while len(samples) < n_samples and tries < n_samples * 10:
+    #         q = sample_config(goal, limits, GOAL_BIAS)
+    #         if not collision_fn(q):
+    #             samples.append(q)
+    #         tries += 1
+
+    #     # 3. Build roadmap graph (offline)
+    #     print("Building PRM graph...")
+    #     graph = build_prm(samples, k, limits, collision_fn)
+
+    #     # 4. Add start and goal to graph
+    #     print("[Query Phase] Connecting start and goal to PRM graph...")
+    #     graph[start] = []
+    #     graph[goal] = []
+
+    #     # 5. Connect start to roadmap
+    #     for q in knn_nodes(samples, start, 2*k):
+    #         if is_path_clear(start, q, collision_fn, STEP_SIZE):
+    #             w = get_distance(start, q)
+    #             graph[start].append((q, w))
+    #             graph[q].append((start, w))
+
+    #     # 6. Connect goal to roadmap
+    #     for q in knn_nodes(samples, goal, 2*k):
+    #         if is_path_clear(goal, q, collision_fn, STEP_SIZE):
+    #             w = get_distance(goal, q)
+    #             graph[goal].append((q, w))
+    #             graph[q].append((goal, w))
+
+    #     # 7. Graph search
+        
+    #     print("Searching for path in PRM graph...")
+    #     path = dijkstra_graph(graph, start, goal)
+    #     visualize_prm(graph, start, goal, path)
+
+    #     if path is None:
+    #         print("PRM failed to find a path.")
+    #     return path
 
     def lazy_prm(start, goal, limits, collision_fn, n_samples=300, k=10):
         """Lazy PRM: construct connectivity using proximity, defer edge collision-check until needed."""
