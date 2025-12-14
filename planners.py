@@ -1,5 +1,5 @@
 import random
-random.seed(420)
+# random.seed(420)
 import numpy as np
 import math
 from helper import (
