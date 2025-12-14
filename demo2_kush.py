@@ -1338,7 +1338,7 @@ def main(screenshot=False):
         return [tuple(p) for p in path]
 
     # --- Main Execution ---
-    PLANNER = 'PRM*'  # change this string to select another planner
+    PLANNER = 'PRM'  # change this string to select another planner
     print(f"Running {PLANNER}...")
     start_time = time.time()
     # ----------------- PLANNER SELECTION -----------------
