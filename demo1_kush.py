@@ -768,59 +768,101 @@ def main(screenshot=False):
     #     return path[::-1]
 
     def informed_rrt_star(start, goal, limits, collision_fn):
-        """Corrected Informed RRT* with multi-step extension + proper goal connection."""
+        """Informed RRT* with better goal connection."""
+        import numpy as np
+        
         nodes = [start]
         parents = {start: None}
-        cost = {start: 0.0}
+        cost_dict = {start: 0.0}
 
         neighbor_radius = 0.4
         best_solution_cost = float('inf')
         solution_found = False
+        
+        c_min = get_distance(start, goal)
+        goal_connection_radius = max(STEP_SIZE * 3.0, 0.5)
 
+        print(f"\n=== Informed RRT* Starting ===")
+        print(f"Start: {start}")
+        print(f"Goal: {goal}")
+        print(f"c_min (straight-line): {c_min:.4f}")
+        print(f"Goal in collision: {collision_fn(goal)}")
+        print(f"STEP_SIZE: {STEP_SIZE}")  # ← ADD THIS LINE
+        print(f"Goal connection radius: {goal_connection_radius:.4f}")
+        print(f"Direct path clear: {is_path_clear(start, goal, collision_fn, STEP_SIZE)}")
+        
         # --------------------------------------------------------
-        # Informed Sampling (Prolate Hyperspheroid approximation)
+        # Informed Sampling
         # --------------------------------------------------------
         def sample_in_ellipsoid(start, goal, c_best):
+            """Sample uniformly within prolate hyperellipsoid."""
             if c_best == float('inf'):
                 return sample_config(goal, limits, GOAL_BIAS)
-
+            
             s = np.array(start)
             g = np.array(goal)
-            c_min = np.linalg.norm(g - s)
-
-            if c_min == 0:
-                return tuple(s)
-
+            c_min_local = np.linalg.norm(g - s)
+            
+            if c_min_local < 1e-6:
+                return sample_config(goal, limits, GOAL_BIAS)
+            
             center = (s + g) / 2.0
-            r1 = c_best / 2.0
-
-            if c_best**2 - c_min**2 <= 0:
-                r_other = 0.0
-            else:
-                r_other = np.sqrt(c_best**2 - c_min**2) / 2.0
-
-            # Draw until we get a valid sample
+            a = c_best / 2.0
+            c_squared = (c_best / 2.0)**2 - (c_min_local / 2.0)**2
+            
+            if c_squared <= 0:
+                return sample_config(goal, limits, GOAL_BIAS)
+            
+            b = np.sqrt(c_squared)
+            
+            d = len(start)
             while True:
-                sample = np.array([random.uniform(-r_other, r_other) for _ in range(len(s))])
-                sample[0] = random.uniform(-r1, r1)
-
-                q = center + sample
-
-                # Clip to joint limits
-                q_clipped = []
-                for i, (mn, mx) in enumerate(limits):
-                    q_clipped.append(float(np.clip(q[i], mn, mx)))
-
-                return tuple(q_clipped)
+                x = np.random.randn(d)
+                if np.linalg.norm(x) <= 1.0:
+                    break
+            
+            x_ellipse = np.zeros(d)
+            x_ellipse[0] = a * x[0]
+            for i in range(1, d):
+                x_ellipse[i] = b * x[i]
+            
+            a1 = (g - s) / c_min_local
+            M = np.eye(d)
+            M[:, 0] = a1
+            
+            for i in range(1, d):
+                v = np.random.randn(d)
+                for j in range(i):
+                    v -= np.dot(v, M[:, j]) * M[:, j]
+                norm_v = np.linalg.norm(v)
+                if norm_v > 1e-10:
+                    M[:, i] = v / norm_v
+                else:
+                    M[:, i] = 0
+                    M[i, i] = 1
+            
+            q_ellipse = center + M @ x_ellipse
+            
+            q_clipped = []
+            for val, (mn, mx) in zip(q_ellipse, limits):
+                q_clipped.append(float(np.clip(val, mn, mx)))
+            
+            q_tuple = tuple(q_clipped)
+            
+            if get_distance(q_tuple, start) + get_distance(q_tuple, goal) > c_best + 0.1:
+                return sample_config(goal, limits, GOAL_BIAS)
+            
+            return q_tuple
 
         # --------------------------------------------------------
-        # Multi-step extension (same as RRT*)
+        # Multi-step extension
         # --------------------------------------------------------
         def extend_towards(q_near, q_rand):
             path_ext = []
             q_curr = q_near
+            max_steps = 10  # Limit extension steps
 
-            while True:
+            for _ in range(max_steps):
                 q_next = steer(q_curr, q_rand, STEP_SIZE)
 
                 if collision_fn(q_next) or not is_path_clear(q_curr, q_next, collision_fn, STEP_SIZE):
@@ -835,76 +877,91 @@ def main(screenshot=False):
             return path_ext
 
         # --------------------------------------------------------
-        # Main Informed RRT* loop
+        # Main loop
         # --------------------------------------------------------
+        goal_attempts = 0
+        closest_to_goal = float('inf')
+        closest_node = None
+
         for it in range(1, MAX_ITERATIONS + 1):
 
-            # If no solution yet → uniform sampling
-            # If solution exists → informed sampling
             if not solution_found:
                 q_rand = sample_config(goal, limits, GOAL_BIAS)
             else:
                 q_rand = sample_in_ellipsoid(start, goal, best_solution_cost)
 
-            # Nearest neighbor
             q_near = get_nearest_node(nodes, q_rand)
-
-            # Multi-step extension
             extension = extend_towards(q_near, q_rand)
+            
             if not extension:
                 continue
 
-            # Add last reachable node
             q_new = extension[-1]
 
-            # ---------------- Parent selection (RRT*) ----------------
+            # Parent selection
             neighbors = [n for n in nodes if get_distance(n, q_new) <= neighbor_radius]
 
             best_parent = q_near
-            best_cost = cost[q_near] + get_distance(q_near, q_new)
+            best_cost = cost_dict[q_near] + get_distance(q_near, q_new)
 
             for n in neighbors:
                 if is_path_clear(n, q_new, collision_fn, STEP_SIZE):
-                    c = cost[n] + get_distance(n, q_new)
+                    c = cost_dict[n] + get_distance(n, q_new)
                     if c < best_cost:
                         best_cost = c
                         best_parent = n
 
             nodes.append(q_new)
             parents[q_new] = best_parent
-            cost[q_new] = best_cost
+            cost_dict[q_new] = best_cost
 
-            # ---------------- Rewire neighbors ----------------
+            # Rewire
             for n in neighbors:
                 if n == best_parent:
                     continue
                 if is_path_clear(q_new, n, collision_fn, STEP_SIZE):
-                    new_cost = cost[q_new] + get_distance(q_new, n)
-                    if new_cost < cost.get(n, float('inf')):
+                    new_cost = cost_dict[q_new] + get_distance(q_new, n)
+                    if new_cost < cost_dict.get(n, float('inf')):
                         parents[n] = q_new
-                        cost[n] = new_cost
+                        cost_dict[n] = new_cost
 
-            # ---------------- Try connecting to goal ----------------
-            if is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
+            # Track closest approach to goal
+            dist_to_goal = get_distance(q_new, goal)
+            if dist_to_goal < closest_to_goal:
+                closest_to_goal = dist_to_goal
+                closest_node = q_new
 
-                sol_cost = cost[q_new] + get_distance(q_new, goal)
+            # Try connecting to goal - RELAXED threshold
+            # goal_threshold = STEP_SIZE * 2.0  # More generous!
+            
+            if dist_to_goal <= goal_connection_radius: 
+                goal_attempts += 1
+                if is_path_clear(q_new, goal, collision_fn, STEP_SIZE):
+                    sol_cost = cost_dict[q_new] + get_distance(q_new, goal)
 
-                # first solution OR improved solution
-                if sol_cost < best_solution_cost:
-                    best_solution_cost = sol_cost
-                    solution_found = True
-                    parents[goal] = q_new
-                    cost[goal] = sol_cost
+                    if sol_cost < best_solution_cost:
+                        best_solution_cost = sol_cost
+                        solution_found = True
+                        parents[goal] = q_new
+                        cost_dict[goal] = sol_cost
+                        print(f"  ✓ Iteration {it}: Found path! Cost = {best_solution_cost:.4f}")
+            
+            # Progress updates
+            if it % 500 == 0:
+                status = f"{best_solution_cost:.4f}" if solution_found else "None"
+                print(f"  Iteration {it}/{MAX_ITERATIONS}, Nodes: {len(nodes)}, Best: {status}")
+                print(f"    Closest to goal: {closest_to_goal:.4f}, Goal attempts: {goal_attempts}")
 
-                    # Continue searching for better paths (Informed RRT*)
-                    # but do NOT return yet.
-
-        # ---------------- After MAX_ITER — return best found ----------------
+        # Return best path
         if not solution_found:
-            print("Informed RRT* failed to find a path.")
+            print(f"✗ Informed RRT* failed to find a path.")
+            print(f"   Closest distance to goal: {closest_to_goal:.4f}")
+            print(f"   Goal connection attempts: {goal_attempts}")
+            print(f"   Total nodes in tree: {len(nodes)}")
             return None
 
-        # reconstruct best available path
+        print(f"✓ Informed RRT* completed. Final cost: {best_solution_cost:.4f}")
+        
         path = []
         cur = goal
         while cur is not None:

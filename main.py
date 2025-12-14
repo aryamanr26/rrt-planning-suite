@@ -8,7 +8,9 @@ from pybullet_tools.utils import (
 )
 
 from helper import get_ee_path, shortcut_smooth, get_distance, compute_path_length, compute_ee_travel_distance, compute_max_joint_jump
-from planners import rrt_connect, rrt_basic, rrt_star, birrt_star, informed_rrt_star, with_node_count
+from planners import (rrt_connect, rrt_basic, rrt_star, 
+                      birrt_star, informed_rrt_star, 
+                      with_node_count, prm, lazy_prm, prm_star)
 
 
 
@@ -52,7 +54,7 @@ def main():
     # ----------------------------
     # SELECT PLANNER
     # ----------------------------
-    PLANNER = "RRT-Connect"
+    PLANNER = "PRM"
 
     print(f"\n==============================")
     print(f" Running {PLANNER}")
@@ -83,6 +85,18 @@ def main():
     elif PLANNER == "InformedRRT*":
         rrt_path, node_count = with_node_count(
             lambda: informed_rrt_star(start_config, goal_config, joint_limits_list, collision_fn)
+        )
+    elif PLANNER == "PRM":
+        rrt_path, node_count = with_node_count(
+            lambda: prm(start_config, goal_config, joint_limits_list, collision_fn)
+        )
+    elif PLANNER == "LazyPRM":
+        rrt_path, node_count = with_node_count(
+            lambda: lazy_prm(start_config, goal_config, joint_limits_list, collision_fn)
+        )
+    elif PLANNER == "PRM*":
+        rrt_path, node_count = with_node_count(
+            lambda: prm_star(start_config, goal_config, joint_limits_list, collision_fn)
         )
     else:
         print("Invalid planner.")

@@ -1,5 +1,9 @@
 import numpy as np
 import random
+import heapq
+import networkx as nx
+import matplotlib.pyplot as plt 
+from math import inf
 from utils import draw_sphere_marker
 from pybullet_tools.utils import (
     set_joint_positions, get_joint_positions, get_link_pose
@@ -163,3 +167,104 @@ def compute_max_joint_jump(path):
         return 0.0
     jumps = [get_distance(a, b) for a, b in zip(path[:-1], path[1:])]
     return max(jumps)
+
+def dijkstra_graph(graph, start_id, goal_id):
+    """Run Dijkstra using node IDs."""
+    dist = {start_id: 0.0}
+    parent = {start_id: None}
+    pq = [(0.0, start_id)]
+    visited = set()
+
+    while pq:
+        d, u = heapq.heappop(pq)
+        if u in visited:
+            continue
+        visited.add(u)
+
+        if u == goal_id:
+            # reconstruct
+            path_ids = []
+            curr = u
+            while curr is not None:
+                path_ids.append(curr)
+                curr = parent[curr]
+            return path_ids[::-1]
+
+        for v, w in graph.get(u, []):
+            nd = d + w
+            if nd < dist.get(v, float('inf')):
+                dist[v] = nd
+                parent[v] = u
+                heapq.heappush(pq, (nd, v))
+
+    return None
+
+
+def visualize_prm(graph, start=None, goal=None, path=None):
+        G = nx.Graph()
+
+        # Build NetworkX graph
+        for u, neighbors in graph.items():
+            for v, w in neighbors:
+                G.add_edge(u, v, weight=w)
+
+        # Node positions (assumes 2D configs)
+        pos = {node: (node[0], node[1]) for node in G.nodes}
+
+        plt.figure(figsize=(8, 8))
+
+        # Draw roadmap nodes + edges
+        nx.draw(
+            G,
+            pos,
+            node_size=12,
+            node_color="lightgray",
+            edge_color="gray",
+            width=0.5,
+            with_labels=False
+        )
+
+        # Highlight solution path
+        if path is not None and len(path) > 1:
+            path_edges = list(zip(path[:-1], path[1:]))
+            nx.draw_networkx_edges(
+                G,
+                pos,
+                edgelist=path_edges,
+                edge_color="blue",
+                width=2.5
+            )
+
+        # Highlight start
+        if start is not None:
+            plt.scatter(
+                start[0], start[1],
+                c="green",
+                s=120,
+                marker="o",
+                edgecolors="black",
+                linewidths=1.5,
+                label="Start"
+            )
+
+        # Highlight goal
+        if goal is not None:
+            plt.scatter(
+                goal[0], goal[1],
+                c="red",
+                s=120,
+                marker="X",
+                edgecolors="black",
+                linewidths=1.5,
+                label="Goal"
+            )
+
+        plt.legend()
+        plt.axis("equal")
+        plt.title("PRM Roadmap with Start and Goal")
+        plt.show()
+
+def knn_nodes(nodes, q, k):
+    """Return k nearest nodes (by get_distance) to q from list nodes."""
+    nodes_sorted = sorted(nodes, key=lambda n: get_distance(n, q))
+    return nodes_sorted[:k]
