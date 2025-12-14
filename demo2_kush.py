@@ -2,6 +2,7 @@ import numpy as np
 from utils import load_env, get_collision_fn_PR2, execute_trajectory
 from pybullet_tools.utils import connect, disconnect, wait_if_gui, joint_from_name, get_joint_positions, set_joint_positions, get_joint_info, get_link_pose, link_from_name
 import random
+import math
 random.seed(420)
 import networkx as nx
 import matplotlib.pyplot as plt
@@ -609,9 +610,24 @@ def main(screenshot=False):
 
         return None
 
+    # def prm(start, goal, limits, collision_fn, n_samples=400, k=10):
+    #     """Probabilistic Roadmap (PRM)."""
+    #     samples = [start, goal]
+    #     # sample random collision-free nodes
+    #     tries = 0
+    #     while len(samples) < n_samples and tries < n_samples * 10:
+    #         q = sample_config(goal, limits, GOAL_BIAS)
+    #         if not collision_fn(q):
+    #             samples.append(q)
+    #         tries += 1
+    #     graph = build_prm(samples, k, limits, collision_fn)
+    #     path = dijkstra_graph(graph, start, goal)
+    #     if path is None:
+    #         print("PRM failed to find a path.")
+    #     return path
 
-    def prm(start, goal, limits, collision_fn, n_samples=600, k=20):
-        """Correct PRM implementation returning a valid path."""
+    def prm(start, goal, limits, collision_fn, n_samples=400, k=15):
+        """Probabilistic Roadmap (PRM)"""
 
         # 1. Reject invalid start / goal
         if collision_fn(start) or collision_fn(goal):
@@ -622,7 +638,7 @@ def main(screenshot=False):
         samples = []
         tries = 0
         while len(samples) < n_samples and tries < n_samples * 10:
-            q = sample_config(goal, limits, GOAL_BIAS)
+            q = sample_config(goal, limits, 0.0)
             if not collision_fn(q):
                 samples.append(q)
             tries += 1
@@ -638,15 +654,19 @@ def main(screenshot=False):
         print("Building PRM graph...")
         graph = build_prm(samples, k, limits, collision_fn)
 
-        # 4. Connect start to its nearest neighbors
-        print("Connecting start and goal...")
-        dists_start = [(i, get_distance(start, samples[i])) for i in range(len(samples) - 2)]
-        dists_start.sort(key=lambda x: x[1])
+        # 4. Add start and goal to graph
+        print("[Query Phase] Connecting start and goal to PRM graph...")
+        graph[start] = []
+        graph[goal] = []
 
-        for i, d in dists_start[:2*k]:
-            if is_path_clear(start, samples[i], collision_fn, STEP_SIZE):
-                graph[start_id].append((i, d))
-                graph[i].append((start_id, d))
+        nearest = knn_nodes(samples, start, 10)
+        print(f"Distances to start: {[get_distance(start, n) for n in nearest]}")
+        # 5. Connect start to roadmap
+        for q in knn_nodes(samples, start, 2*k):
+            if is_path_clear(start, q, collision_fn, STEP_SIZE):
+                w = get_distance(start, q)
+                graph[start].append((q, w))
+                graph[q].append((start, w))
 
         # 5. Connect goal to nearest neighbors
         dists_goal = [(i, get_distance(goal, samples[i])) for i in range(len(samples) - 2)]
@@ -657,9 +677,12 @@ def main(screenshot=False):
                 graph[goal_id].append((i, d))
                 graph[i].append((goal_id, d))
 
-        # 6. Run Dijkstra
-        print("Searching for path...")
-        path_ids = dijkstra_graph(graph, start_id, goal_id)
+        # 7. Graph search
+        print(f"Start connections: {len(graph[start])}")
+        print(f"Goal connections: {len(graph[goal])}")
+        print("Searching for path in PRM graph...")
+        path = dijkstra_graph(graph, start, goal)
+        visualize_prm(graph, start, goal, path)
 
         if path_ids is None:
             print("PRM failed to find a path.")
@@ -791,132 +814,337 @@ def main(screenshot=False):
 
     def lazy_prm(start, goal, limits, collision_fn, n_samples=300, k=10):
         """Lazy PRM: construct connectivity using proximity, defer edge collision-check until needed."""
+        
+        print(f"\n=== Lazy PRM Starting ===")
+        print(f"Target samples: {n_samples}, k-nearest: {k}")
+        
+        # 1. Sample collision-free nodes
         samples = [start, goal]
         tries = 0
         while len(samples) < n_samples and tries < n_samples * 10:
-            q = sample_config(goal, limits, GOAL_BIAS)
+            q = sample_config(goal, limits, 0.0)  # No goal bias for PRM
             if not collision_fn(q):
                 samples.append(q)
             tries += 1
-        # adjacency by proximity (no edge collision checks yet)
-        adj = {s: [] for s in samples}
+        
+        print(f"✓ Sampled {len(samples)} collision-free nodes (tries: {tries})")
+        
+        # 2. Build UNDIRECTED graph by proximity (NO collision checks yet)
+        graph = {s: [] for s in samples}
+        total_edges = 0
         for s in samples:
             neighbors = knn_nodes(samples, s, k+1)
             for n in neighbors:
                 if n == s:
                     continue
                 w = get_distance(s, n)
-                adj[s].append((n, w))
-        # now run lazy search: Dijkstra but only validate edges when popped
-        dist = {start: 0.0}
-        parent = {start: None}
-        pq = [(0.0, start)]
-        visited = set()
-        while pq:
-            d, u = heapq.heappop(pq)
-            if u in visited:
-                continue
-            visited.add(u)
-            if u == goal:
-                path = []
-                cur = u
-                while cur is not None:
-                    path.append(cur)
-                    cur = parent[cur]
-                return path[::-1]
-            for v, w in adj.get(u, []):
-                # validate this edge now
-                if is_path_clear(u, v, collision_fn, STEP_SIZE):
-                    nd = d + w
-                    if nd < dist.get(v, inf):
-                        dist[v] = nd
-                        parent[v] = u
-                        heapq.heappush(pq, (nd, v))
-                # else skip edge (lazy)
-        print("Lazy PRM failed to find a path.")
-        return None
+                graph[s].append((n, w))  # Add edge s→n
+                graph[n].append((s, w))  # Add edge n→s (undirected!)
+                total_edges += 1
+        
+        # Count unique edges (divide by 2 since undirected)
+        unique_edges = total_edges // 2
+        print(f"✓ Built graph: {len(graph)} nodes, ~{unique_edges} edges (unchecked)")
+        print(f"  Start has {len(graph[start])} neighbors")
+        print(f"  Goal has {len(graph[goal])} neighbors")
+        
+        # 3. Lazy search: find path, validate, remove invalid edges, repeat
+        checked_edges = set()
+        iteration = 0
+        
+        while True:
+            iteration += 1
+            print(f"\n--- Iteration {iteration} ---")
+            
+            path = dijkstra_graph(graph, start, goal)
+            
+            if path is None:
+                print(f"✗ Lazy PRM failed to find a path after {iteration} iterations.")
+                print(f"  Total edges checked: {len(checked_edges)}")
+                return None
+            
+            print(f"  Found candidate path with {len(path)} nodes, {len(path)-1} edges")
+            
+            # Validate each edge in the path
+            all_valid = True
+            for i in range(len(path) - 1):
+                u, v = path[i], path[i+1]
+                edge = (min(u, v), max(u, v))
+                
+                if edge not in checked_edges:
+                    checked_edges.add(edge)
+                    if not is_path_clear(u, v, collision_fn, STEP_SIZE):
+                        print(f"  ✗ Edge {i} in collision, removing from graph")
+                        # Remove BOTH directions of invalid edge
+                        graph[u] = [(n, w) for n, w in graph[u] if n != v]  # Remove u→v
+                        graph[v] = [(n, w) for n, w in graph[v] if n != u]  # Remove v→u
+                        all_valid = False
+                        break
+            
+            if all_valid:
+                print(f"✓ Valid path found!")
+                print(f"  Total iterations: {iteration}")
+                print(f"  Total edges checked: {len(checked_edges)}")
+                print(f"  Path length: {len(path)} nodes")
+                return path
+            else:
+                print(f"  Re-planning without invalid edge...")
 
-    def prm_star(start, goal, limits, collision_fn, n_samples=400, k=12):
-        """PRM* - PRM with local rewiring (simple variant)."""
-        samples = [start, goal]
+    # def prm_star(start, goal, limits, collision_fn, n_samples=400, k=12):
+    #     """PRM* - PRM with local rewiring (simple variant)."""
+    #     samples = [start, goal]
+    #     tries = 0
+    #     while len(samples) < n_samples and tries < n_samples * 10:
+    #         q = sample_config(goal, limits, GOAL_BIAS)
+    #         if not collision_fn(q):
+    #             samples.append(q)
+    #         tries += 1
+    #     graph = {s: [] for s in samples}
+    #     cost = {}
+    #     # incremental insertion + rewiring
+    #     for s in samples:
+    #         # connect to neighbors
+    #         neighbors = knn_nodes(samples, s, k+1)
+    #         for n in neighbors:
+    #             if n == s:
+    #                 continue
+    #             if is_path_clear(s, n, collision_fn, STEP_SIZE):
+    #                 w = get_distance(s, n)
+    #                 graph[s].append((n, w))
+    #     # run Dijkstra on built graph
+    #     path = dijkstra_graph(graph, start, goal)
+    #     if path is None:
+    #         print("PRM* failed to find a path.")
+    #     return path
+    
+    def prm_star(start, goal, limits, collision_fn, n_samples=600, k=15):
+        """PRM* with radius-based connections - with adaptive start/goal connection."""
+        
+        print("\n=== PRM* (Naive) Starting ===")
+        
+        # 1. Reject invalid start/goal
+        if collision_fn(start) or collision_fn(goal):
+            print("Start or goal in collision.")
+            return None
+        
+        # 2. Sample collision-free nodes
+        samples = []
         tries = 0
         while len(samples) < n_samples and tries < n_samples * 10:
-            q = sample_config(goal, limits, GOAL_BIAS)
+            q = sample_config(goal, limits, 0.0)  # No goal bias
             if not collision_fn(q):
                 samples.append(q)
             tries += 1
-        graph = {s: [] for s in samples}
-        cost = {}
-        # incremental insertion + rewiring
-        for s in samples:
-            # connect to neighbors
-            neighbors = knn_nodes(samples, s, k+1)
-            for n in neighbors:
-                if n == s:
+        
+        print(f"✓ Sampled {len(samples)} collision-free nodes")
+        
+        n = len(samples)
+        d = len(start)  # Dimension
+        
+        # 3. Calculate PRM* connection radius
+        gamma = 2.0 * ((1 + 1/d) * (1/math.pi)) ** (1/d)
+        r = gamma * (math.log(n) / n) ** (1/d)
+        
+        print(f"  Dimension: {d}, Connection radius: {r:.4f}")
+        
+        # 4. Build graph - O(n²) all-pairs check
+        print("Building PRM* graph (checking all pairs)...")
+        graph = {tuple(s): [] for s in samples}
+        edges_checked = 0
+        edges_added = 0
+        
+        for i, s in enumerate(samples):
+            s_tuple = tuple(s)
+            for j, t in enumerate(samples):
+                if i >= j:  # Avoid duplicates and self-loops
                     continue
-                if is_path_clear(s, n, collision_fn, STEP_SIZE):
-                    w = get_distance(s, n)
-                    graph[s].append((n, w))
-        # run Dijkstra on built graph
-        path = dijkstra_graph(graph, start, goal)
+                
+                edges_checked += 1
+                t_tuple = tuple(t)
+                
+                # Check if within radius
+                if get_distance(s_tuple, t_tuple) <= r:
+                    # Validate edge collision-free
+                    if is_path_clear(s_tuple, t_tuple, collision_fn, STEP_SIZE):
+                        w = get_distance(s_tuple, t_tuple)
+                        graph[s_tuple].append((t_tuple, w))
+                        graph[t_tuple].append((s_tuple, w))
+                        edges_added += 1
+        
+        print(f"✓ Graph built: {edges_checked} pairs checked, {edges_added} edges added")
+        
+        # 5. Add start and goal to graph with k-nearest (not limited by radius)
+        print("Connecting start and goal...")
+        start_tuple = tuple(start)
+        goal_tuple = tuple(goal)
+        graph[start_tuple] = []
+        graph[goal_tuple] = []
+        
+        # k = 15  # Connect to 15 nearest neighbors
+        
+        # Connect start to k-nearest
+        start_neighbors = knn_nodes([tuple(s) for s in samples], start_tuple, k)
+        for s_tuple in start_neighbors:
+            if is_path_clear(start_tuple, s_tuple, collision_fn, STEP_SIZE):
+                w = get_distance(start_tuple, s_tuple)
+                graph[start_tuple].append((s_tuple, w))
+                graph[s_tuple].append((start_tuple, w))
+        
+        # Connect goal to k-nearest
+        goal_neighbors = knn_nodes([tuple(s) for s in samples], goal_tuple, k)
+        for s_tuple in goal_neighbors:
+            if is_path_clear(goal_tuple, s_tuple, collision_fn, STEP_SIZE):
+                w = get_distance(goal_tuple, s_tuple)
+                graph[goal_tuple].append((s_tuple, w))
+                graph[s_tuple].append((goal_tuple, w))
+        
+        print(f"  Start connections: {len(graph[start_tuple])}")
+        print(f"  Goal connections: {len(graph[goal_tuple])}")
+        
+        if len(graph[start_tuple]) == 0:
+            print("  WARNING: Start could not connect to roadmap!")
+        if len(graph[goal_tuple]) == 0:
+            print("  WARNING: Goal could not connect to roadmap!")
+        
+        # 6. Search for path
+        print("Searching for path...")
+        path = dijkstra_graph(graph, start_tuple, goal_tuple)
+        
         if path is None:
-            print("PRM* failed to find a path.")
+            print("✗ PRM* failed to find a path.")
+        else:
+            print(f"✓ Path found with {len(path)} nodes")
+        
         return path
+    
+    # def fmt_star(start, goal, limits, collision_fn, n_samples=400, neighbor_radius=0.6):
+    #     """Simplified FMT*: sample nodes and run a Dijkstra-like expansion constrained by neighbor radius."""
+    #     # sample nodes including start & goal
+    #     samples = [start, goal]
+    #     tries = 0
+    #     while len(samples) < n_samples and tries < n_samples * 10:
+    #         q = sample_config(goal, limits, GOAL_BIAS)
+    #         if not collision_fn(q):
+    #             samples.append(q)
+    #         tries += 1
+    #     # build neighbor lists (without checking collisions yet)
+    #     neighbor_map = {s: [n for n in samples if n != s and get_distance(n, s) <= neighbor_radius] for s in samples}
+    #     # Initialize sets
+    #     V_unvisited = set(samples)
+    #     V_open = set([start])
+    #     parent = {start: None}
+    #     cost = {start: 0.0}
+    #     while V_open:
+    #         # pick lowest-cost node in V_open
+    #         z = min(V_open, key=lambda v: cost.get(v, inf))
+    #         V_open.remove(z)
+    #         V_unvisited.discard(z)
+    #         # consider neighbors of z that are unvisited
+    #         for x in list(V_unvisited):
+    #             if x in neighbor_map[z]:
+    #                 # find y in V_open ∩ neighbor(x) that minimizes cost[y] + dist(y,x)
+    #                 Y = [y for y in V_open if y in neighbor_map[x]]
+    #                 if not Y:
+    #                     continue
+    #                 # try connecting x via best y
+    #                 best_y = None
+    #                 best_cost = inf
+    #                 for y in Y:
+    #                     if is_path_clear(y, x, collision_fn, STEP_SIZE):
+    #                         c = cost.get(y, inf) + get_distance(y, x)
+    #                         if c < best_cost:
+    #                             best_cost = c
+    #                             best_y = y
+    #                 if best_y is not None:
+    #                     cost[x] = best_cost
+    #                     parent[x] = best_y
+    #                     V_open.add(x)
+    #                     V_unvisited.discard(x)
+    #         if goal in parent:
+    #             # reconstruct
+    #             path = []
+    #             cur = goal
+    #             while cur is not None:
+    #                 path.append(cur)
+    #                 cur = parent.get(cur, None)
+    #             return path[::-1]
+    #     print("FMT* failed to find a path.")
+    #     return None
 
-    def fmt_star(start, goal, limits, collision_fn, n_samples=400, neighbor_radius=0.6):
-        """Simplified FMT*: sample nodes and run a Dijkstra-like expansion constrained by neighbor radius."""
-        # sample nodes including start & goal
-        samples = [start, goal]
-        tries = 0
-        while len(samples) < n_samples and tries < n_samples * 10:
-            q = sample_config(goal, limits, GOAL_BIAS)
+    def fmt_star(start, goal, limits, collision_fn, n_samples=600):
+        """FMT*: Fast Marching Tree"""
+        
+        # 1. Sample all nodes upfront
+        samples = [goal]  # Include goal in samples
+        while len(samples) < n_samples:
+            q = sample_config(goal, limits, 0.0)
             if not collision_fn(q):
                 samples.append(q)
-            tries += 1
-        # build neighbor lists (without checking collisions yet)
-        neighbor_map = {s: [n for n in samples if n != s and get_distance(n, s) <= neighbor_radius] for s in samples}
-        # Initialize sets
-        V_unvisited = set(samples)
-        V_open = set([start])
-        parent = {start: None}
-        cost = {start: 0.0}
+        
+        n = len(samples)
+        d = len(start)
+        
+        # Calculate connection radius (same as PRM*)
+        gamma = 2.0 * ((1 + 1/d) * (1/math.pi)) ** (1/d)
+        r = gamma * (math.log(n) / n) ** (1/d)
+        
+        # 2. Initialize sets
+        V_open = {tuple(start)}  # Nodes in tree, not yet expanded
+        V_closed = set()          # Nodes already expanded
+        V_unvisited = {tuple(s) for s in samples}  # Not yet in tree
+        
+        # Track costs and parents
+        cost = {tuple(start): 0.0}
+        parent = {tuple(start): None}
+        
+        # 3. Grow tree until goal reached
         while V_open:
-            # pick lowest-cost node in V_open
-            z = min(V_open, key=lambda v: cost.get(v, inf))
-            V_open.remove(z)
-            V_unvisited.discard(z)
-            # consider neighbors of z that are unvisited
-            for x in list(V_unvisited):
-                if x in neighbor_map[z]:
-                    # find y in V_open ∩ neighbor(x) that minimizes cost[y] + dist(y,x)
-                    Y = [y for y in V_open if y in neighbor_map[x]]
-                    if not Y:
-                        continue
-                    # try connecting x via best y
-                    best_y = None
-                    best_cost = inf
-                    for y in Y:
-                        if is_path_clear(y, x, collision_fn, STEP_SIZE):
-                            c = cost.get(y, inf) + get_distance(y, x)
-                            if c < best_cost:
-                                best_cost = c
-                                best_y = y
-                    if best_y is not None:
-                        cost[x] = best_cost
-                        parent[x] = best_y
-                        V_open.add(x)
-                        V_unvisited.discard(x)
-            if goal in parent:
-                # reconstruct
+            # Pick lowest-cost node from open set
+            z = min(V_open, key=lambda node: cost[node])
+            
+            if z == tuple(goal):
+                # Reconstruct path
                 path = []
-                cur = goal
-                while cur is not None:
-                    path.append(cur)
-                    cur = parent.get(cur, None)
+                current = z
+                while current is not None:
+                    path.append(current)
+                    current = parent[current]
                 return path[::-1]
-        print("FMT* failed to find a path.")
+            
+            V_open.remove(z)
+            
+            # Find neighbors of z within radius r
+            X_near = [x for x in V_unvisited if get_distance(z, x) <= r]
+            
+            # Try to connect neighbors to z
+            for x in X_near:
+                # Find all nodes in V_open that could reach x
+                Y_near = [y for y in V_open if get_distance(y, x) <= r]
+                
+                # Find best parent for x
+                y_min = None
+                cost_min = float('inf')
+                
+                for y in Y_near:
+                    if is_path_clear(y, x, collision_fn, STEP_SIZE):
+                        c = cost[y] + get_distance(y, x)
+                        if c < cost_min:
+                            y_min = y
+                            cost_min = c
+                
+                # Add x to tree if connection found
+                if y_min is not None:
+                    parent[x] = y_min
+                    cost[x] = cost_min
+                    V_open.add(x)
+                    V_unvisited.remove(x)
+            
+            # Mark z as fully expanded
+            V_closed.add(z)
+        
+        print("FMT* failed to find path")
         return None
-
+    
     def bit_star(start, goal, limits, collision_fn, batch_size=200, k=12):
         """Simplified BIT*: batch sampling + PRM* style incremental improvement with informed batches."""
         # Start with small sample set, iteratively add batches and search
@@ -1058,7 +1286,7 @@ def main(screenshot=False):
         return [tuple(p) for p in path]
 
     # --- Main Execution ---
-    PLANNER = 'PRM'  # change this string to select another planner
+    PLANNER = 'FMT*'  # change this string to select another planner
     print(f"Running {PLANNER}...")
     start_time = time.time()
     # ----------------- PLANNER SELECTION -----------------
@@ -1078,9 +1306,9 @@ def main(screenshot=False):
     elif PLANNER == 'LazyPRM':
         rrt_path = lazy_prm(start_config, goal_config, joint_limits_list, collision_fn, n_samples=400, k=10)
     elif PLANNER == 'PRM*':
-        rrt_path = prm_star(start_config, goal_config, joint_limits_list, collision_fn, n_samples=500, k=14)
+        rrt_path = prm_star(start_config, goal_config, joint_limits_list, collision_fn, n_samples=500, k=15)
     elif PLANNER == 'FMT*':
-        rrt_path = fmt_star(start_config, goal_config, joint_limits_list, collision_fn, n_samples=400, neighbor_radius=0.6)
+        rrt_path = fmt_star(start_config, goal_config, joint_limits_list, collision_fn, n_samples=400)
     elif PLANNER == 'BIT*':
         rrt_path = bit_star(start_config, goal_config, joint_limits_list, collision_fn, batch_size=200, k=12)
     elif PLANNER == 'A*-Grid':
