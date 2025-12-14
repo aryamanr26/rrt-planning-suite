@@ -626,6 +626,76 @@ def main(screenshot=False):
     #         print("PRM failed to find a path.")
     #     return path
 
+    # def prm(start, goal, limits, collision_fn, n_samples=400, k=15):
+    #     """Probabilistic Roadmap (PRM)"""
+
+    #     # 1. Reject invalid start / goal
+    #     if collision_fn(start) or collision_fn(goal):
+    #         print("Start or goal in collision.")
+    #         return None
+
+    #     # 2. Generate collision-free random samples
+    #     samples = []
+    #     tries = 0
+    #     while len(samples) < n_samples and tries < n_samples * 10:
+    #         q = sample_config(goal, limits, 0.0)
+    #         if not collision_fn(q):
+    #             samples.append(q)
+    #         tries += 1
+
+    #     # Add start and goal to sample list
+    #     start_id = len(samples)
+    #     samples.append(start)
+
+    #     goal_id = len(samples)
+    #     samples.append(goal)
+
+    #     # 3. Build PRM graph
+    #     print("Building PRM graph...")
+    #     graph = build_prm(samples, k, limits, collision_fn)
+
+    #     # 4. Add start and goal to graph
+    #     print("[Query Phase] Connecting start and goal to PRM graph...")
+    #     graph[start] = []
+    #     graph[goal] = []
+
+    #     nearest = knn_nodes(samples, start, 10)
+    #     print(f"Distances to start: {[get_distance(start, n) for n in nearest]}")
+    #     # 5. Connect start to roadmap
+    #     for q in knn_nodes(samples, start, 2*k):
+    #         if is_path_clear(start, q, collision_fn, STEP_SIZE):
+    #             w = get_distance(start, q)
+    #             graph[start].append((q, w))
+    #             graph[q].append((start, w))
+
+    #     # 5. Connect goal to nearest neighbors
+    #     dists_goal = [(i, get_distance(goal, samples[i])) for i in range(len(samples) - 2)]
+    #     dists_goal.sort(key=lambda x: x[1])
+
+    #     for i, d in dists_goal[:2*k]:
+    #         if is_path_clear(goal, samples[i], collision_fn, STEP_SIZE):
+    #             graph[goal_id].append((i, d))
+    #             graph[i].append((goal_id, d))
+
+    #     # 7. Graph search
+    #     print(f"Start connections: {len(graph[start])}")
+    #     print(f"Goal connections: {len(graph[goal])}")
+    #     print("Searching for path in PRM graph...")
+    #     path = dijkstra_graph(graph, start, goal)
+    #     visualize_prm(graph, start, goal, path)
+
+    #     if path_ids is None:
+    #         print("PRM failed to find a path.")
+    #         return None
+
+    #     # Convert node IDs back to actual configs
+    #     path = [samples[i] for i in path_ids]
+
+    #     # Optional: visualize roadmap
+    #     visualize_prm(graph, start, goal, path)
+
+    #     return path
+
     def prm(start, goal, limits, collision_fn, n_samples=400, k=15):
         """Probabilistic Roadmap (PRM)"""
 
@@ -634,7 +704,7 @@ def main(screenshot=False):
             print("Start or goal in collision.")
             return None
 
-        # 2. Generate collision-free random samples
+        # 2. Sample collision-free configurations (roadmap only)
         samples = []
         tries = 0
         while len(samples) < n_samples and tries < n_samples * 10:
@@ -643,14 +713,7 @@ def main(screenshot=False):
                 samples.append(q)
             tries += 1
 
-        # Add start and goal to sample list
-        start_id = len(samples)
-        samples.append(start)
-
-        goal_id = len(samples)
-        samples.append(goal)
-
-        # 3. Build PRM graph
+        # 3. Build roadmap graph (offline)
         print("Building PRM graph...")
         graph = build_prm(samples, k, limits, collision_fn)
 
@@ -668,14 +731,12 @@ def main(screenshot=False):
                 graph[start].append((q, w))
                 graph[q].append((start, w))
 
-        # 5. Connect goal to nearest neighbors
-        dists_goal = [(i, get_distance(goal, samples[i])) for i in range(len(samples) - 2)]
-        dists_goal.sort(key=lambda x: x[1])
-
-        for i, d in dists_goal[:2*k]:
-            if is_path_clear(goal, samples[i], collision_fn, STEP_SIZE):
-                graph[goal_id].append((i, d))
-                graph[i].append((goal_id, d))
+        # 6. Connect goal to roadmap
+        for q in knn_nodes(samples, goal, 2*k):
+            if is_path_clear(goal, q, collision_fn, STEP_SIZE):
+                w = get_distance(goal, q)
+                graph[goal].append((q, w))
+                graph[q].append((goal, w))
 
         # 7. Graph search
         print(f"Start connections: {len(graph[start])}")
@@ -684,23 +745,14 @@ def main(screenshot=False):
         path = dijkstra_graph(graph, start, goal)
         visualize_prm(graph, start, goal, path)
 
-        if path_ids is None:
+        if path is None:
             print("PRM failed to find a path.")
-            return None
-
-        # Convert node IDs back to actual configs
-        path = [samples[i] for i in path_ids]
-
-        # Optional: visualize roadmap
-        visualize_prm(graph, start, goal, path)
-
         return path
 
-
-    # def knn_nodes(nodes, q, k):
-    #     """Return k nearest nodes (by get_distance) to q from list nodes."""
-    #     nodes_sorted = sorted(nodes, key=lambda n: get_distance(n, q))
-    #     return nodes_sorted[:k]
+    def knn_nodes(nodes, q, k):
+        """Return k nearest nodes (by get_distance) to q from list nodes."""
+        nodes_sorted = sorted(nodes, key=lambda n: get_distance(n, q))
+        return nodes_sorted[:k]
 
     # def build_prm(samples, k, limits, collision_fn):
     #     """Build a PRM graph given list of sample configs (assumed collision-free)."""
@@ -1286,7 +1338,7 @@ def main(screenshot=False):
         return [tuple(p) for p in path]
 
     # --- Main Execution ---
-    PLANNER = 'FMT*'  # change this string to select another planner
+    PLANNER = 'PRM*'  # change this string to select another planner
     print(f"Running {PLANNER}...")
     start_time = time.time()
     # ----------------- PLANNER SELECTION -----------------
