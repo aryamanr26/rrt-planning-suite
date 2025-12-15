@@ -67,3 +67,5 @@ echo ""
 echo "    python demo.py"
 echo ""
 echo "========================================"
+
+conda activate rob422_project
