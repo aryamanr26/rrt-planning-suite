@@ -54,7 +54,7 @@ def main():
     # ----------------------------
     # SELECT PLANNER
     # ----------------------------
-    PLANNER = "PRM"
+    PLANNER = "RRT*"
 
     print(f"\n==============================")
     print(f" Running {PLANNER}")
