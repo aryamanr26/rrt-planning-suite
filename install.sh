@@ -51,21 +51,19 @@ fi
 
 echo "✔ Environment created successfully."
 
-conda activate rob422_project
-
 # ----------------------------------------
 # Final instructions
 # ----------------------------------------
-# echo ""
-# echo "========================================"
-# echo " INSTALLATION COMPLETE!"
-# echo "========================================"
-# echo "Activate your environment using:"
-# echo ""
-# echo "    conda activate $ENV_NAME"
-# echo ""
-# echo "Then run the project normally:"
-# echo ""
-# echo "    python demo.py"
-# echo ""
-# echo "========================================"
+echo ""
+echo "========================================"
+echo " INSTALLATION COMPLETE!"
+echo "========================================"
+echo "Activate your environment using:"
+echo ""
+echo "    conda activate $ENV_NAME"
+echo ""
+echo "Then run the project normally:"
+echo ""
+echo "    python demo.py"
+echo ""
+echo "========================================"
