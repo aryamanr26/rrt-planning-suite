@@ -57,6 +57,13 @@ colors = [
 ]
 
 # ============================================================
+# Ensure "plots" folder exists
+# ============================================================
+PLOT_DIR = "plots"
+os.makedirs(PLOT_DIR, exist_ok=True)
+print(f"\n📁 Plots will be saved in: {PLOT_DIR}/\n")
+
+# ============================================================
 # Plot function for each metric with multiple algorithms
 # ============================================================
 def plot_metric_multi(metric_key, ylabel):
@@ -67,7 +74,6 @@ def plot_metric_multi(metric_key, ylabel):
 
         runs = df_runs["run_id"]
         values = df_runs[metric_key].astype(float)
-
         avg_value = float(df_avg[metric_key])
 
         # Plot algorithm's run values
@@ -78,13 +84,8 @@ def plot_metric_multi(metric_key, ylabel):
             color=color
         )
 
-        # # Plot average horizontal line
-        # plt.axhline(
-        #     avg_value, linestyle="--",
-        #     color=color,
-        #     alpha=0.6,
-        #     label=f"{algo_name} avg = {avg_value:.3f}"
-        # )
+        # # OPTIONAL: average line per algorithm
+        # plt.axhline(avg_value, linestyle="--", color=color, alpha=0.5)
 
     plt.xlabel("Run ID (Iteration)")
     plt.ylabel(ylabel)
@@ -92,10 +93,17 @@ def plot_metric_multi(metric_key, ylabel):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
+
+    # SAVE PLOT
+    filename = f"{metric_key}_comparison.png"
+    save_path = os.path.join(PLOT_DIR, filename)
+    plt.savefig(save_path, dpi=300)
+    print(f"📌 Saved plot → {save_path}")
+
     plt.show()
 
 # ============================================================
-# GENERATE ALL PLOTS
+# GENERATE & SAVE ALL PLOTS
 # ============================================================
 for key, label in metrics.items():
     plot_metric_multi(key, label)
