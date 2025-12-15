@@ -15,7 +15,8 @@ from helper import (
 
 from planners import (
     rrt_connect, rrt_basic, rrt_star,
-    birrt_star, informed_rrt_star, with_node_count
+    birrt_star, informed_rrt_star, with_node_count,
+    prm, lazy_prm, prm_star
 )
 
 # ============================================================
@@ -26,8 +27,8 @@ def main():
     # ----------------------------
     # USER SETTINGS
     # ----------------------------
-    PLANNER = "RRT-Connect"     # ← select planner here
-    N_RUNS  = 20                # ← number of repeated trials
+    PLANNER = "BiRRT*"        # ← select planner
+    N_SUCCESS = 20          # ← how many SUCCESSFUL runs required
 
     CSV_FILENAME = f"results_{PLANNER.replace('*','star')}.csv"
 
@@ -45,19 +46,24 @@ def main():
         "max_joint_jump"
     ]
 
-    # to store all results
-    all_results = []
+    all_results = []        # store SUCCESSFUL runs only
+    success_count = 0       # count only successful runs
+    attempt = 0             # count total attempts
 
     # ============================================================
-    # REPEAT PLANNING N TIMES
+    # KEEP RUNNING UNTIL N_SUCCESS SUCCESSFUL RUNS
     # ============================================================
-    for run in range(1, N_RUNS + 1):
+    while success_count < N_SUCCESS:
+
+        attempt += 1
+        run = success_count + 1  # success run index
 
         print("\n==========================================")
-        print(f"  RUN {run} / {N_RUNS}  — Planner = {PLANNER}")
+        print(f"  ATTEMPT {attempt} — SUCCESS {success_count}/{N_SUCCESS}")
+        print(f"  Planner = {PLANNER}")
         print("==========================================")
 
-        connect(use_gui=False)   # change to True if you want GUI every run
+        connect(use_gui=False)
         robots, obstacles = load_env("pr2table.json")
 
         joint_names = (
@@ -87,11 +93,11 @@ def main():
         GOAL_BIAS = 0.1
         SMOOTH_ITER = 200
 
-        # ----------------------------
-        # PLAN — wrapped with node counter
-        # ----------------------------
         t0 = time.time()
 
+        # --------------------------------------------------------
+        # PLANNER SELECTION (UNCHANGED)
+        # --------------------------------------------------------
         if PLANNER == "RRT-Connect":
             rrt_path, node_count = with_node_count(
                 lambda: rrt_connect(start_config, goal_config, joint_limits_list, collision_fn)
@@ -112,6 +118,18 @@ def main():
             rrt_path, node_count = with_node_count(
                 lambda: informed_rrt_star(start_config, goal_config, joint_limits_list, collision_fn)
             )
+        elif PLANNER == "PRM":
+            rrt_path, node_count = with_node_count(
+                lambda: prm(start_config, goal_config, joint_limits_list, collision_fn)
+            )
+        elif PLANNER == "LazyPRM":
+            rrt_path, node_count = with_node_count(
+                lambda: lazy_prm(start_config, goal_config, joint_limits_list, collision_fn)
+            )
+        elif PLANNER == "PRM*":
+            rrt_path, node_count = with_node_count(
+                lambda: prm_star(start_config, goal_config, joint_limits_list, collision_fn)
+            )
         else:
             print("Invalid planner.")
             disconnect()
@@ -119,54 +137,38 @@ def main():
 
         planning_time = time.time() - t0
 
-        # ----------------------------
-        # If failure: store failed row
-        # ----------------------------
+        # --------------------------------------------------------
+        # SKIP FAILURES (DO NOT ADD TO CSV)
+        # --------------------------------------------------------
         if not rrt_path:
-            print("❌ Planner failed — storing result as NaN.")
-            all_results.append([
-                run, node_count, planning_time,
-                0, np.nan, 0, np.nan, np.nan, np.nan, np.nan
-            ])
+            print("❌ Failed — retrying without counting as success.\n")
             disconnect()
             continue
 
-        # ----------------------------
-        # Compute raw metrics
-        # ----------------------------
+        # --------------------------------------------------------
+        # SUCCESS → compute metrics
+        # --------------------------------------------------------
         raw_length = compute_path_length(rrt_path)
 
-        # ----------------------------
-        # Smooth the path
-        # ----------------------------
         path_s = shortcut_smooth(rrt_path, collision_fn, SMOOTH_ITER, STEP_SIZE)
         smooth_length = compute_path_length(path_s)
 
         improve = (1 - smooth_length / raw_length) * 100.0
 
-        # ----------------------------
-        # EE Metrics
-        # ----------------------------
         link_id = link_from_name(robots["pr2"], "l_gripper_tool_frame")
-
         ee_path = get_ee_path(robots["pr2"], joint_idx, link_id, path_s, interp_step_size=0.01)
         ee_travel = compute_ee_travel_distance(ee_path)
         max_jump = compute_max_joint_jump(path_s)
 
-        # save metrics for this run
+        # Save SUCCESSFUL run
         all_results.append([
-            run,
-            node_count,
-            planning_time,
-            len(rrt_path),
-            raw_length,
-            len(path_s),
-            smooth_length,
-            improve,
-            ee_travel,
-            max_jump
+            run, node_count, planning_time,
+            len(rrt_path), raw_length,
+            len(path_s), smooth_length,
+            improve, ee_travel, max_jump
         ])
 
+        success_count += 1
         disconnect()
 
     # ============================================================
@@ -174,22 +176,22 @@ def main():
     # ============================================================
     arr = np.array(all_results, dtype=float)
 
-    avg_nodes     = np.nanmean(arr[:, 1])
-    avg_time      = np.nanmean(arr[:, 2])
-    avg_raw_waypts= np.nanmean(arr[:, 3])
-    avg_raw_len   = np.nanmean(arr[:, 4])
-    avg_smooth_wp = np.nanmean(arr[:, 5])
-    avg_smooth_len = np.nanmean(arr[:, 6])
-    avg_improve   = np.nanmean(arr[:, 7])
-    avg_ee        = np.nanmean(arr[:, 8])
-    avg_jump      = np.nanmean(arr[:, 9])
+    avg_nodes      = np.mean(arr[:, 1])
+    avg_time       = np.mean(arr[:, 2])
+    avg_raw_wp     = np.mean(arr[:, 3])
+    avg_raw_len    = np.mean(arr[:, 4])
+    avg_smooth_wp  = np.mean(arr[:, 5])
+    avg_smooth_len = np.mean(arr[:, 6])
+    avg_improve    = np.mean(arr[:, 7])
+    avg_ee         = np.mean(arr[:, 8])
+    avg_jump       = np.mean(arr[:, 9])
 
     print("\n==============================================")
-    print(f" AVERAGE PERFORMANCE over {N_RUNS} runs")
+    print(f" SUCCESSFUL RUNS COMPLETED = {N_SUCCESS}")
     print("==============================================")
     print(f"Avg nodes expanded       : {avg_nodes:.1f}")
     print(f"Avg planning time (s)    : {avg_time:.3f}")
-    print(f"Avg raw waypoint count   : {avg_raw_waypts:.1f}")
+    print(f"Avg raw waypoint count   : {avg_raw_wp:.1f}")
     print(f"Avg raw path length      : {avg_raw_len:.4f}")
     print(f"Avg smoothed waypoints   : {avg_smooth_wp:.1f}")
     print(f"Avg smoothed path length : {avg_smooth_len:.4f}")
@@ -197,14 +199,14 @@ def main():
     print(f"Avg EE travel distance   : {avg_ee:.4f}")
     print(f"Avg max joint jump       : {avg_jump:.4f}")
 
-    # append averages as final row in CSV
+    # Append AVG row
     all_results.append([
-        "AVG", avg_nodes, avg_time, avg_raw_waypts, avg_raw_len,
+        "AVG", avg_nodes, avg_time, avg_raw_wp, avg_raw_len,
         avg_smooth_wp, avg_smooth_len, avg_improve, avg_ee, avg_jump
     ])
 
     # ============================================================
-    # WRITE CSV FILE
+    # SAVE CSV
     # ============================================================
     with open(CSV_FILENAME, "w", newline="") as f:
         writer = csv.writer(f)
@@ -212,7 +214,6 @@ def main():
         writer.writerows(all_results)
 
     print(f"\nCSV saved → {CSV_FILENAME}\n")
-
 
 
 if __name__ == "__main__":
