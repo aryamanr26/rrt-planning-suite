@@ -61,7 +61,7 @@ This launches PyBullet, runs the selected planner once, smooths the resulting pa
 A sample aggregated comparison table:
 
 <p align="center">
-  <img src="plots/result_table.jpeg" width="400" alt="Benchmark Table">
+  <img src="plots/result_table.jpeg" width="1000" alt="Benchmark Table">
 </p>
 
 
